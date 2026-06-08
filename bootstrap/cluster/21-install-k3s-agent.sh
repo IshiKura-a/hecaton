@@ -33,6 +33,8 @@ for h in $(inventory_hosts); do
 done
 [[ ${#agents[@]} -gt 0 ]] || die "no host with role: agent in $(inventory_path)"
 
+force="${HECATON_FORCE:-}"
+
 log "k3s $K3S_VERSION agents: ${agents[*]}  joining $server_url"
 
 remote_script=$(cat <<'REMOTE'
@@ -47,8 +49,8 @@ if command -v k3s >/dev/null 2>&1; then
   current="$(k3s --version 2>/dev/null | head -1 | awk '{print $3}')"
 fi
 
-if [[ "$current" == "$WANT" ]] && systemctl is-active --quiet k3s-agent; then
-  echo "[remote] k3s agent $WANT already running on $(hostname)"
+if [[ "$current" == "$WANT" ]] && [[ -z "${FORCE_REMOTE:-}" ]] && systemctl is-active --quiet k3s-agent; then
+  echo "[remote] k3s agent $WANT already running on $(hostname) (use --force to reconfigure)"
   exit 0
 fi
 
@@ -58,13 +60,23 @@ else
   echo "[remote] installing k3s agent $WANT"
 fi
 
+# Default max-pods to CPU count if not configured.
+max_pods="${MAX_PODS_REMOTE:-$(nproc)}"
+
 curl -sfL https://get.k3s.io | \
   INSTALL_K3S_VERSION="$WANT" \
   K3S_URL="$K3S_URL_REMOTE" \
   K3S_TOKEN="$K3S_TOKEN_REMOTE" \
   INSTALL_K3S_EXEC="agent \
     --flannel-iface=tailscale0 \
-    --node-ip=$ts_ip" \
+    --node-ip=$ts_ip \
+    --kubelet-arg=max-pods=$max_pods \
+    --kubelet-arg=image-gc-high-threshold=85 \
+    --kubelet-arg=image-gc-low-threshold=70 \
+    --kubelet-arg=serialize-image-pulls=false \
+    --kubelet-arg=max-parallel-image-pulls=16 \
+    --kubelet-arg=eviction-hard= \
+    --kubelet-arg=eviction-soft=" \
   sh -
 
 systemctl is-active --quiet k3s-agent \
@@ -72,8 +84,13 @@ systemctl is-active --quiet k3s-agent \
 REMOTE
 )
 
-env_prefix="K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") K3S_URL_REMOTE=$(printf '%q' "$server_url") K3S_TOKEN_REMOTE=$(printf '%q' "$node_token")"
-parallel_each_host "$env_prefix" "${agents[@]}" <<< "$remote_script"
+for h in "${agents[@]}"; do
+  max_pods="$(inventory_field "$h" max_pods 2>/dev/null || true)"
+  env_prefix="K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") K3S_URL_REMOTE=$(printf '%q' "$server_url") K3S_TOKEN_REMOTE=$(printf '%q' "$node_token") MAX_PODS_REMOTE=$(printf '%q' "$max_pods") FORCE_REMOTE=$(printf '%q' "$force")"
+  log "installing agent on $h (max_pods=${max_pods:-auto/nproc})"
+  ssh_to "$h" "$env_prefix bash -s" <<< "$remote_script" &
+done
+wait
 
 log "verify:"
 log "  KUBECONFIG=$HECATON_ROOT/config/kubeconfig kubectl get nodes -o wide"

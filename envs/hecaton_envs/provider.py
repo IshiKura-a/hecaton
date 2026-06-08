@@ -26,7 +26,9 @@ sandbox image conforming to the agent-sandbox spec works unchanged.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -34,6 +36,18 @@ from dataclasses import dataclass, field
 import httpx
 
 from .errors import BrokerError, SandboxExecError
+
+
+def _get_tailscale_device_id() -> str:
+    """Get this machine's Tailscale device ID from the local daemon."""
+    try:
+        out = subprocess.check_output(
+            ["tailscale", "status", "--json"],
+            timeout=5,
+        )
+        return json.loads(out)["Self"]["ID"]
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -53,6 +67,7 @@ class SandboxHandle:
     port: int
     # Bound to a SandboxProvider in `acquire`; not part of the public surface.
     _provider: SandboxProvider = field(repr=False)
+    node: str = ""
 
     def exec(self, cmd: str, *, timeout_s: float | None = None) -> ExecResult:
         url = f"http://{self.host}:{self.port}/execute"
@@ -72,6 +87,7 @@ class SandboxHandle:
             )
 
         data = resp.json()
+        self._provider.heartbeat(self.id)
         return ExecResult(
             stdout=data["stdout"],
             stderr=data["stderr"],
@@ -127,6 +143,17 @@ class SandboxProvider:
             headers={"Authorization": f"Bearer {token}"},
         )
         self._sandbox = httpx.Client(timeout=httpx.Timeout(600.0))
+        self._register()
+
+    def _register(self) -> None:
+        """Register this trainer with the broker for lifecycle tracking."""
+        try:
+            self._broker.post(
+                f"{self._base}/register",
+                json={"run_id": self.run_id, "device_id": _get_tailscale_device_id()},
+            )
+        except httpx.HTTPError:
+            pass  # best-effort; broker may be older version
 
     @classmethod
     def from_env(cls, *, run_id: str) -> SandboxProvider:
@@ -149,8 +176,17 @@ class SandboxProvider:
             template=d["template"],
             host=d["host"],
             port=d["port"],
+            node=d.get("node", ""),
             _provider=self,
         )
+
+    def heartbeat(self, sandbox_id: str) -> None:
+        """Send heartbeat to keep sandbox alive. Called automatically by exec(),
+        but can also be called manually during long local computations."""
+        try:
+            self._broker.post(f"{self._base}/heartbeat/{sandbox_id}")
+        except httpx.HTTPError:
+            pass  # best-effort; don't fail the caller
 
     def release(self, sb: SandboxHandle) -> None:
         _raise(self._broker.delete(f"{self._base}/sandboxes/{sb.id}"))

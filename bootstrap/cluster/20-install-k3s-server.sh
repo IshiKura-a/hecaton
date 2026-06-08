@@ -29,6 +29,8 @@ for h in $(inventory_hosts); do
 done
 [[ -n "$server" ]] || die "no host with role: server in $(inventory_path)"
 
+force="${HECATON_FORCE:-}"
+
 log "k3s $K3S_VERSION server target: $server"
 
 # Remote installer. Idempotent: if the running k3s already matches the
@@ -45,8 +47,8 @@ if command -v k3s >/dev/null 2>&1; then
   current="$(k3s --version 2>/dev/null | head -1 | awk '{print $3}')"
 fi
 
-if [[ "$current" == "$WANT" ]]; then
-  echo "[remote] k3s $WANT already installed on $(hostname)"
+if [[ "$current" == "$WANT" ]] && [[ -z "${FORCE_REMOTE:-}" ]]; then
+  echo "[remote] k3s $WANT already installed on $(hostname) (use --force to reconfigure)"
 else
   if [[ -n "$current" ]]; then
     echo "[remote] upgrading k3s $current -> $WANT"
@@ -59,6 +61,9 @@ else
   #   --advertise-address         apiserver advertises the same address
   #   --disable=traefik,servicelb we provide ingress / LB ourselves later
   #   --write-kubeconfig-mode=644 readable by non-root for `scp`/`cat`
+  # Default max-pods to CPU count if not configured.
+  max_pods="${MAX_PODS_REMOTE:-$(nproc)}"
+
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$WANT" \
     INSTALL_K3S_EXEC="server \
@@ -67,7 +72,15 @@ else
       --advertise-address=$ts_ip \
       --disable=traefik \
       --disable=servicelb \
-      --write-kubeconfig-mode=644" \
+      --write-kubeconfig-mode=644 \
+      --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml \
+      --kubelet-arg=max-pods=$max_pods \
+      --kubelet-arg=image-gc-high-threshold=85 \
+      --kubelet-arg=image-gc-low-threshold=70 \
+      --kubelet-arg=serialize-image-pulls=false \
+      --kubelet-arg=max-parallel-image-pulls=16 \
+      --kubelet-arg=eviction-hard= \
+      --kubelet-arg=eviction-soft=" \
     sh -
 fi
 
@@ -83,7 +96,13 @@ sudo k3s kubectl get --raw=/healthz >/dev/null 2>&1 \
 REMOTE
 )
 
-ssh_to "$server" "K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") bash -s" <<< "$remote_script"
+# Upload scheduler config before install.
+log "uploading scheduler-config.yaml to $server"
+scp_to "$server" "$HECATON_ROOT/config/scheduler-config.yaml" "/tmp/scheduler-config.yaml"
+ssh_to "$server" "sudo mkdir -p /etc/rancher/k3s && sudo mv /tmp/scheduler-config.yaml /etc/rancher/k3s/scheduler-config.yaml"
+
+max_pods="$(inventory_field "$server" max_pods 2>/dev/null || true)"
+ssh_to "$server" "K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") MAX_PODS_REMOTE=$(printf '%q' "$max_pods") FORCE_REMOTE=$(printf '%q' "$force") bash -s" <<< "$remote_script"
 
 # Pull what we need from the server, one ssh per artifact (keeps parsing trivial).
 server_ip="$(ssh_to "$server" 'tailscale ip -4 | head -1')"

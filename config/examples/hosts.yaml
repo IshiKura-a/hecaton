@@ -21,6 +21,9 @@
 # host has 8 GPUs but you want to reserve 4 for non-k8s workloads — set
 # `gpu_count: 4` and only indices 0..3 will be advertised as schedulable
 # `amd.com/gpu` or `nvidia.com/gpu` resources.
+#
+# `max_pods` (optional) caps how many pods (sandboxes) can run on the node.
+# Omit to default to the host's CPU count (1 sandbox per core).
 
 hosts:
   - name: control-plane-1
@@ -31,5 +34,6 @@ hosts:
     ssh_host: gpu-host-02
     role: agent
     gpu_count: 4            # only expose 4 GPUs of this host to k8s
+    max_pods: 32            # optional; defaults to CPU count
 
   # Add the rest of your hosts below.

@@ -11,6 +11,11 @@ export HECATON_ROOT
 
 source "$HECATON_ROOT/lib/common.sh"
 
+# Pass --force to re-apply k3s config even if version matches.
+if [[ "${1:-}" == "--force" ]]; then
+  export HECATON_FORCE=1
+fi
+
 # Fail fast if the laptop is missing tools we depend on later.
 bash "$HECATON_ROOT/scripts/preflight.sh"
 
