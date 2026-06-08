@@ -1,0 +1,24 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: swe-vllm
+  namespace: hecaton-sandboxes
+spec:
+  podTemplate:
+    spec:
+      containers:
+      - name: sandbox
+        # NOTE: random placeholder image — replace with whatever you have
+        # built that wraps vllm with the agent-sandbox HTTP contract.
+        image: ghcr.io/your-org/swe-vllm:latest
+        ports:
+        - containerPort: 8888
+        resources:
+          requests:
+            cpu: "4"
+            memory: 32Gi
+          limits:
+            # Vendor key must match the fleet's device plugin
+            # (amd.com/gpu when GCR hosts run rocm-k8s-device-plugin,
+            # nvidia.com/gpu otherwise).
+            amd.com/gpu: "1"

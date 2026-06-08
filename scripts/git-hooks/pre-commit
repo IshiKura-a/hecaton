@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook. Refuses to commit anything that contains real
+# Tailscale auth keys, hostnames, or operator logins. Delegates to
+# scripts/scan-secrets.sh — keep the patterns there.
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+exec bash "$repo_root/scripts/scan-secrets.sh"

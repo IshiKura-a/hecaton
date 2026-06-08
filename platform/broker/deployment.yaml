@@ -1,0 +1,101 @@
+# Broker Deployment + RBAC + NodePort Service.
+# Rendered with $BROKER_IMAGE substituted by 26-install-broker.sh.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hecaton-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hecaton-sandboxes
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hecaton-broker
+  namespace: hecaton-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hecaton-broker
+rules:
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["extensions.agents.x-k8s.io"]
+  resources: ["sandboxtemplates"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hecaton-broker
+subjects:
+- kind: ServiceAccount
+  name: hecaton-broker
+  namespace: hecaton-system
+roleRef:
+  kind: ClusterRole
+  name: hecaton-broker
+  apiGroup: rbac.authorization.k8s.io
+---
+# Trainer bearer token. Mounted into the broker pod as HECATON_TOKEN env.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hecaton-broker-token
+  namespace: hecaton-system
+type: Opaque
+stringData:
+  HECATON_TOKEN: "__HECATON_TOKEN__"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hecaton-broker
+  namespace: hecaton-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hecaton-broker }
+  template:
+    metadata:
+      labels: { app: hecaton-broker }
+    spec:
+      serviceAccountName: hecaton-broker
+      containers:
+      - name: broker
+        image: __BROKER_IMAGE__
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: HECATON_NAMESPACE
+          value: hecaton-sandboxes
+        - name: HECATON_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hecaton-broker-token
+              key: HECATON_TOKEN
+---
+# NodePort so the trainer (on the tailnet) can hit
+#   http://<any-fleet-host-tailnet-ip>:30443/
+apiVersion: v1
+kind: Service
+metadata:
+  name: hecaton-broker
+  namespace: hecaton-system
+spec:
+  type: NodePort
+  selector: { app: hecaton-broker }
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+    nodePort: 30443

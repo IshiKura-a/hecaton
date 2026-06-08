@@ -1,0 +1,35 @@
+# Inventory of hosts that make up the hecaton fleet (the docker hosts that
+# run sandbox pods). Trainer machines run elsewhere (e.g. Singularity) and
+# join the tailnet separately under tag:trainer — they do NOT go here.
+#
+# Copy this file to config/hosts.yaml and edit. config/hosts.yaml is gitignored.
+#
+# `name` is the short, DNS-safe label used as both the Tailscale node name
+# and the k3s node name. Lowercase, no `@`.
+#
+# `ssh_host` is what gets passed straight to `ssh` as the target. The expected
+# pattern is to define a `Host <ssh_host>` block in your local ~/.ssh/config
+# with HostName, User, Port, IdentityFile, etc. hecaton itself does NOT store
+# any ssh credentials, users, or key paths.
+#
+# `role` is one of:
+#   server   - runs the k3s control plane (exactly one across the fleet).
+#   agent    - runs k3s agent (workers; can be many).
+#
+# `gpu_count` (optional) caps how many GPUs the device plugin exposes to
+# Kubernetes. Omit to expose all GPUs the host actually has. Useful when a
+# host has 8 GPUs but you want to reserve 4 for non-k8s workloads — set
+# `gpu_count: 4` and only indices 0..3 will be advertised as schedulable
+# `amd.com/gpu` or `nvidia.com/gpu` resources.
+
+hosts:
+  - name: control-plane-1
+    ssh_host: gpu-host-01   # alias in ~/.ssh/config
+    role: server
+
+  - name: worker-1
+    ssh_host: gpu-host-02
+    role: agent
+    gpu_count: 4            # only expose 4 GPUs of this host to k8s
+
+  # Add the rest of your hosts below.

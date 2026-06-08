@@ -1,0 +1,83 @@
+{
+	// Paste into the admin UI editor at:
+	//   https://login.tailscale.com/admin/acls/file
+	// Source-of-truth template; copy to config/tailnet-policy.hujson and
+	// fill in real logins under "groups".
+
+	"groups": {
+		"group:fleet-ops": ["your-login@example.com"]
+	},
+
+	"tagOwners": {
+		"tag:gcr-sandbox":  ["group:fleet-ops"],  // k3s nodes (hosts)
+		"tag:fleet-broker": ["group:fleet-ops"],  // broker pod (control-plane HTTP)
+		"tag:fleet-subnet": ["group:fleet-ops"],  // in-cluster subnet router
+		"tag:trainer":      ["group:fleet-ops"]   // RL trainer processes
+	},
+
+	// Routes that may be auto-approved (no human approval in admin UI).
+	// Restricted to devices carrying tag:fleet-subnet so a random tagged
+	// device cannot announce something arbitrary.
+	"autoApprovers": {
+		"routes": {
+			"10.42.0.0/16": ["tag:fleet-subnet"]   // k3s default pod CIDR
+		}
+	},
+
+	"acls": [
+		{
+			"action": "accept",
+			"src":    ["group:fleet-ops"],
+			"dst":    ["tag:gcr-sandbox:*", "tag:fleet-broker:*", "tag:fleet-subnet:*"]
+		},
+		{
+			"action": "accept",
+			"src":    ["tag:gcr-sandbox"],
+			"dst":    ["tag:gcr-sandbox:*"]
+		},
+		{
+			// Broker may reach fleet hosts and any sandbox pod for health
+			// checks or active cleanup. Not required by today's data path
+			// (trainer talks to pods directly) but keeps the source-side
+			// of tag:fleet-broker non-empty so the tag isn't a dead-end.
+			"action": "accept",
+			"src":    ["tag:fleet-broker"],
+			"dst":    ["tag:gcr-sandbox:*", "10.42.0.0/16:*"]
+		},
+		{
+			// The subnet router pod itself originates the forwarded
+			// trainer→pod traffic from its own tailnet identity, so it
+			// must be allowed to reach the pod CIDR it advertises.
+			"action": "accept",
+			"src":    ["tag:fleet-subnet"],
+			"dst":    ["10.42.0.0/16:*"]
+		},
+		{
+			"action": "accept",
+			"src":    ["tag:trainer"],
+			"dst":    ["tag:fleet-broker:443"]
+		},
+		{
+			// Trainer reaches sandbox pods directly via the pod CIDR that
+			// tag:fleet-subnet advertises into the tailnet.
+			"action": "accept",
+			"src":    ["tag:trainer"],
+			"dst":    ["10.42.0.0/16:*"]
+		},
+		{
+			// Trainer hits the broker NodePort on any fleet host.
+			"action": "accept",
+			"src":    ["tag:trainer"],
+			"dst":    ["tag:gcr-sandbox:*"]
+		}
+	],
+
+	"ssh": [
+		{
+			"action": "accept",
+			"src":    ["group:fleet-ops"],
+			"dst":    ["tag:gcr-sandbox", "tag:fleet-broker", "tag:fleet-subnet"],
+			"users":  ["autogroup:nonroot", "root"]
+		}
+	]
+}

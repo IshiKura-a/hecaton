@@ -1,0 +1,51 @@
+# Tailscale subnet router that joins the tailnet as tag:fleet-subnet and
+# advertises the cluster pod CIDR. Trainers in the tailnet can then dial
+# any pod IP directly (no router service in the data path).
+#
+# Userspace networking (no host TUN device, no NET_ADMIN required) keeps
+# this pod portable across any k3s node.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-subnet-router
+  labels:
+    app: tailscale-subnet-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tailscale-subnet-router
+  template:
+    metadata:
+      labels:
+        app: tailscale-subnet-router
+    spec:
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-subnet-router-auth
+              key: TS_AUTHKEY
+        - name: TS_KUBE_SECRET
+          value: ""                    # disable secret-backed state
+        - name: TS_STATE_DIR
+          value: /var/lib/tailscale
+        - name: TS_USERSPACE
+          value: "true"
+        - name: TS_ROUTES
+          value: "10.42.0.0/16"        # k3s default pod CIDR
+        - name: TS_HOSTNAME
+          value: hecaton-subnet-router
+        - name: TS_EXTRA_ARGS
+          value: "--advertise-tags=tag:fleet-subnet --accept-dns=false"
+        volumeMounts:
+        - name: state
+          mountPath: /var/lib/tailscale
+      volumes:
+      - name: state
+        emptyDir: {}

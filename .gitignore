@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+tskey-*
+
+# Everything generated or filled-in under config/ stays local.
+# The committed templates live in config/examples/.
+config/*
+!config/examples/
+!config/examples/**
+
+# Local state
+.cache/
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/
+.python-version
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
