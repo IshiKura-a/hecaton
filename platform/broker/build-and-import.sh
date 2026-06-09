@@ -19,7 +19,16 @@ export HECATON_ROOT
 source "$HECATON_ROOT/lib/common.sh"
 source "$HECATON_ROOT/lib/inventory.sh"
 source "$HECATON_ROOT/lib/remote.sh"
+source "$HECATON_ROOT/lib/version.sh"
+
+# Caller-provided BROKER_IMAGE (e.g. from dev/iter.sh) must win over
+# whatever's in .env — load_env does `set -a; source .env` which would
+# otherwise silently overwrite it.
+_broker_image_override="${BROKER_IMAGE:-}"
 load_env
+if [[ -n "$_broker_image_override" ]]; then
+  BROKER_IMAGE="$_broker_image_override"
+fi
 
 image="${BROKER_IMAGE:-docker.io/library/hecaton-broker:dev}"
 
@@ -62,10 +71,17 @@ scp_to "$build_host" "$HECATON_ROOT/platform/broker/broker.py"    "$remote_src/b
 
 # 2) build + export to a tarball on the build host
 log "==> $build_host: docker build"
+build_sha="$(git_sha)"
+build_dirty="$(git_dirty)"
+build_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ssh_to "$build_host" "
   set -euo pipefail
   cd $remote_src
-  sudo docker build -t $image .
+  sudo docker build \
+    --build-arg BUILD_GIT_SHA='$build_sha' \
+    --build-arg BUILD_GIT_DIRTY='${build_dirty:-0}' \
+    --build-arg BUILD_TIMESTAMP='$build_ts' \
+    -t $image .
   sudo docker save $image -o /tmp/hecaton-broker.tar
   sudo chmod 644 /tmp/hecaton-broker.tar
 "
@@ -84,7 +100,12 @@ for h in $(inventory_hosts); do
 done
 
 if (( ${#others[@]} > 0 )); then
-  local_tar="$(mktemp -t hecaton-broker.XXXX.tar)"
+  # mktemp's trailing-X substitution only kicks in if X's are at the
+  # end of the template, so we let mktemp pick the random part and
+  # then rename to add the .tar extension.
+  local_tar="$(mktemp "${TMPDIR:-/tmp}/hecaton-broker.XXXXXX")"
+  mv "$local_tar" "$local_tar.tar"
+  local_tar="$local_tar.tar"
   trap 'rm -f "$local_tar"' EXIT
   log "pulling tarball from $build_host to laptop"
   ssh_to "$build_host" 'sudo cat /tmp/hecaton-broker.tar' > "$local_tar"

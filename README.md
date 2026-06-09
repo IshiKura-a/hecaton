@@ -19,7 +19,8 @@ hecaton/
 ├── envs/         Python trainer SDK (`hecaton-envs`) + container entrypoint.
 ├── scaffolds/    Agent tool sets (R2E-Gym, ...) staged into sandbox pods.
 ├── scripts/      Laptop preflight + trainer-host setup.
-├── examples/     End-to-end demo (`trainer-smoke`: Dockerfile + run.py).
+├── examples/     End-to-end demos (`trainer-smoke/run_bare.py` and
+│                 `trainer-smoke/run_r2egym.py`).
 ├── ops/          Day-2 (remove-host etc.).
 ├── lib/          Shared shell helpers + pinned versions of upstream pieces.
 └── config/       Real config (gitignored) + examples/ templates (committed).
@@ -122,6 +123,31 @@ bash bootstrap/install.sh
 ```
 
 Phase 27 will refuse to re-stage while any sandbox is alive (it would silently swap tools mid-rollout, since hostPath is a bind mount). Release everything first — `provider.revoke(...)` on each trainer, or `kubectl delete sandbox -n hecaton-sandboxes --all` for ops — then re-run.
+
+## Development workflow
+
+One command, `make dev`, does the minimum work to bring the cluster + a test trainer up to your current checkout. Each phase compares a content hash against the deployed state and skips itself if nothing changed.
+
+```bash
+make dev                       # stage scaffolds + redeploy broker (whatever changed)
+make dev host=Mi300X           # also rsync sources + rebuild trainer base image
+                               # if needed + run examples/trainer-smoke/run_r2egym.py
+```
+
+What each step does and when it runs:
+
+| Phase | Triggers when… | Action |
+| --- | --- | --- |
+| scaffold | `scaffolds/` content hash differs from last stage | wraps `bootstrap/cluster/27-stage-agent-tools.sh` |
+| broker | `platform/broker/` content hash ≠ the image tag the cluster is running | build + import + `kubectl set image` to `hecaton-broker:dev-<hash>` |
+| trainer-image | trainer Dockerfile or entrypoint hash changed (and `host=` set) | rsync repo to host, `docker build` in `HECATON_SOURCE=mount` mode |
+| smoke | `host=` set | `docker run` the trainer image with the repo bind-mounted; `trainer-entrypoint.sh` `pip install -e`s the mounted SDK so trainer / smoke script changes never need a rebuild |
+
+Surgical targets exist for each phase (`make dev-scaffold`, `make dev-broker`, `make dev-trainer-image host=…`, `make dev-smoke host=…`). Env knobs: `SKIP_BROKER=1`, `FORCE_BROKER=1`, etc.
+
+Provenance: every locally built broker image carries `hecaton.git.sha` / `hecaton.git.dirty` / `hecaton.build.timestamp` labels — `docker inspect` (or `kubectl describe pod`) tells you exactly which commit any running broker came from.
+
+Production updates still go through `bootstrap/install.sh` (idempotent) for cluster-wide changes, and the `broker-image.yml` GitHub Actions workflow for canonical broker images on `ghcr.io`.
 
 ## Conventions
 

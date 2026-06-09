@@ -31,26 +31,38 @@ if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
+# Install bind-mounted SDK before tailscaled comes up — pip needs
+# direct egress to PyPI, and the base image's pip lacks PySocks so it
+# can't go through tailscaled's SOCKS proxy.
+if [[ -n "${HECATON_SDK_PATH:-}" && -d "$HECATON_SDK_PATH" ]]; then
+  echo "trainer-entrypoint: pip install --user $HECATON_SDK_PATH"
+  pip install --quiet --no-cache-dir --user "$HECATON_SDK_PATH"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 # Userspace networking: no /dev/net/tun, no NET_ADMIN, works inside any
 # container. tailscaled binds a SOCKS5 proxy on $TS_SOCKS_PORT.
-mkdir -p /var/lib/tailscale /var/run/tailscale
+# State + socket under $TS_STATE_DIR so we work when running as a
+# non-root user (e.g. `make dev` runs the container as the host user).
+TS_STATE_DIR="${TS_STATE_DIR:-/var/lib/tailscale}"
+TS_RUN_DIR="${TS_RUN_DIR:-/var/run/tailscale}"
+mkdir -p "$TS_STATE_DIR" "$TS_RUN_DIR"
 tailscaled \
   --tun=userspace-networking \
   --socks5-server="localhost:${TS_SOCKS_PORT}" \
-  --state=/var/lib/tailscale/tailscaled.state \
-  --socket=/var/run/tailscale/tailscaled.sock \
-  >/var/log/tailscaled.log 2>&1 &
+  --state="$TS_STATE_DIR/tailscaled.state" \
+  --socket="$TS_RUN_DIR/tailscaled.sock" \
+  >/tmp/tailscaled.log 2>&1 &
 TAILSCALED_PID=$!
 
 # Wait for tailscaled to come up before `tailscale up`.
 for _ in $(seq 1 20); do
-  if tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then
+  if tailscale --socket="$TS_RUN_DIR/tailscaled.sock" status >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-tailscale --socket=/var/run/tailscale/tailscaled.sock up \
+tailscale --socket="$TS_RUN_DIR/tailscaled.sock" up \
   --authkey="$TS_AUTHKEY" \
   --hostname="$TS_HOSTNAME" \
   --accept-dns=true \

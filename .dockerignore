@@ -1,0 +1,15 @@
+# Keep docker build contexts small + don't leak secrets/state into images.
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.cache
+config
+.env
+.env.bak
+.env.local
+*.key
+*.pem
+tskey-*
+.DS_Store
