@@ -1,0 +1,36 @@
+--- a/file_editor.py
++++ b/file_editor.py
+@@ -620,6 +620,15 @@
+ 
+ 
+ def main():
++    # hecaton-local-patch: see scaffolds/r2egym/_patches/README.md
++    def _strbool(s: str) -> bool:
++        v = s.lower()
++        if v in ("true", "1", "yes", "y", "on"):
++            return True
++        if v in ("false", "0", "no", "n", "off"):
++            return False
++        raise argparse.ArgumentTypeError(f"expected bool, got {s!r}")
++
+     def parse_view_range(range_str: str):
+         # Remove surrounding brackets if present
+         range_str = range_str.strip().strip("[]()")
+@@ -684,7 +693,7 @@
+     )
+     parser.add_argument(
+         "--enable_linting",
+-        type=bool,
++        type=_strbool,  # hecaton-local-patch
+         default=False,
+         help="Enable linting checks for Python files before saving changes.",
+     )
+@@ -696,7 +705,7 @@
+     )
+     parser.add_argument(
+         "--python_only",
+-        type=bool,
++        type=_strbool,  # hecaton-local-patch
+         default=True,
+         help="If True, attempts to limit view (for both dir and file level) to Python files only.",
+     )

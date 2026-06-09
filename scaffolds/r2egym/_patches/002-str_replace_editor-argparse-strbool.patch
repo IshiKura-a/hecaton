@@ -1,0 +1,34 @@
+--- a/str_replace_editor.py
++++ b/str_replace_editor.py
+@@ -505,6 +505,15 @@
+ 
+ 
+ def main():
++    # hecaton-local-patch: see scaffolds/r2egym/_patches/README.md
++    def _strbool(s: str) -> bool:
++        v = s.lower()
++        if v in ("true", "1", "yes", "y", "on"):
++            return True
++        if v in ("false", "0", "no", "n", "off"):
++            return False
++        raise argparse.ArgumentTypeError(f"expected bool, got {s!r}")
++
+     def parse_view_range(range_str: str):
+         # Remove surrounding brackets if present
+         range_str = range_str.strip().strip("[]()")
+@@ -569,13 +578,13 @@
+     )
+     parser.add_argument(
+         "--enable_linting",
+-        type=bool,
++        type=_strbool,  # hecaton-local-patch
+         default=False,
+         help="Enable linting checks for Python files before saving changes.",
+     )
+     parser.add_argument(
+         "--python_only",
+-        type=bool,
++        type=_strbool,  # hecaton-local-patch
+         default=True,
+         help="If True, attempts to limit view (for both dir and file level) to Python files only.",
+     )

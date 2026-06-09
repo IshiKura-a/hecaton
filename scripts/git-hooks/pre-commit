@@ -1,10 +1,37 @@
 #!/usr/bin/env bash
 #
-# Pre-commit hook. Refuses to commit anything that contains real
-# Tailscale auth keys, hostnames, or operator logins. Delegates to
-# scripts/scan-secrets.sh — keep the patterns there.
+# Pre-commit hook. Two gates:
+#   1. Secret scan — refuses real Tailscale auth keys, hostnames, or
+#      operator logins (delegates to scripts/scan-secrets.sh).
+#   2. Python lint — runs ruff against staged .py files. Config lives
+#      in ruff.toml at the repo root.
 
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-exec bash "$repo_root/scripts/scan-secrets.sh"
+
+bash "$repo_root/scripts/scan-secrets.sh"
+
+# Collect staged Python files (added, copied, modified, renamed).
+# `while read` instead of `mapfile` for bash 3.2 (macOS default).
+py_files=()
+while IFS= read -r f; do
+  py_files+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+
+if (( ${#py_files[@]} > 0 )); then
+  if ! command -v uvx >/dev/null 2>&1 && ! command -v ruff >/dev/null 2>&1; then
+    echo "pre-commit: ruff not found (install uv or 'pip install ruff') — refusing commit" >&2
+    exit 1
+  fi
+  if command -v ruff >/dev/null 2>&1; then
+    ruff_cmd=(ruff)
+  else
+    ruff_cmd=(uvx ruff)
+  fi
+  # --force-exclude makes ruff honour ruff.toml's `exclude` even when
+  # the files are passed explicitly on the command line (the default
+  # when invoked by tools like pre-commit).
+  "${ruff_cmd[@]}" check --force-exclude --config "$repo_root/ruff.toml" "${py_files[@]}"
+fi
+

@@ -27,6 +27,7 @@ phases=(
   "bootstrap/cluster/23-install-agent-sandbox.sh"
   "bootstrap/cluster/24-apply-templates.sh"
   "bootstrap/cluster/25-install-subnet-router.sh"
+  "bootstrap/cluster/27-stage-agent-tools.sh"
   # Broker image must be on the fleet nodes before phase 26 applies the
   # Deployment (imagePullPolicy: IfNotPresent). build-and-import.sh is
   # idempotent — it re-builds and re-imports, which is also how broker

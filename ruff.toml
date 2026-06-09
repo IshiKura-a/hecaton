@@ -1,0 +1,41 @@
+# Ruff config — applies to every Python file in the repo.
+#
+# Why a single root config rather than per-package: hecaton has two
+# small Python projects (envs/ and platform/broker/) plus ad-hoc
+# scripts. Keeping one config avoids drift and matches how the rest of
+# the repo is wired (one set of bash helpers, one set of git hooks).
+#
+# Both projects target Python 3.10 — see envs/pyproject.toml and
+# platform/broker/pyproject.toml.
+
+target-version = "py310"
+line-length = 100
+
+exclude = [
+  ".git",
+  ".venv*",
+  "__pycache__",
+  "config",     # gitignored runtime config
+  "scaffolds", # vendored upstream tool scripts (R2E-Gym, ...) — not ours to lint
+]
+
+[lint]
+# Start with a focused set: real bugs (E, F, B), modern syntax (UP),
+# consistent imports (I). Skip stylistic-only rules until we have a
+# reason to enforce them.
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = [
+  # FastAPI/typer-style "B008: do not perform function calls in
+  # argument defaults" — `Depends(...)` is exactly this pattern.
+  "B008",
+]
+
+[lint.per-file-ignores]
+# Bootstrap scripts and one-off entrypoints intentionally use top-level
+# side effects; allow them.
+"scripts/*.py" = ["E402"]
+
+[format]
+# Don't enable the formatter wholesale — match the style of the file
+# being edited (the existing code isn't formatted, so a global rewrite
+# would be a huge unrelated diff). Reserve `ruff format` for opt-in.

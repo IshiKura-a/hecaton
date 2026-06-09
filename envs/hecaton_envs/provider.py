@@ -8,10 +8,6 @@ Usage:
     res = sb.exec("pytest -q")
     p.release(sb)
 
-The set of available templates is fleet-side configuration; each task
-repo registers a SandboxTemplate CR that fixes image, resources and
-anything else about the pod. Trainers reference templates by name only.
-
 Why we do not import `k8s_agent_sandbox` (the upstream Python SDK):
   * its `Sandbox` class needs a `K8sHelper`, which talks to the
     Kubernetes API. Trainers in our model have no kubeconfig.
@@ -68,6 +64,7 @@ class SandboxHandle:
     # Bound to a SandboxProvider in `acquire`; not part of the public surface.
     _provider: SandboxProvider = field(repr=False)
     node: str = ""
+    scaffold: str = ""
 
     def exec(self, cmd: str, *, timeout_s: float | None = None) -> ExecResult:
         url = f"http://{self.host}:{self.port}/execute"
@@ -133,6 +130,25 @@ class SandboxHandle:
             )
         return bool(resp.json().get("exists", False))
 
+    def invoke(self, action: object, *, timeout_s: float | None = None) -> object:
+        """Run an action against the sandbox.
+
+        With a scaffold bound (`acquire(scaffold=...)`), `action` is a
+        scaffold-native object (e.g. an r2egym Action) and the return
+        is whatever that scaffold's adapter parses out of the sandbox
+        response. Without a scaffold, `action` is treated as a bash
+        command and the return is an `ExecResult` — same as `exec()`.
+        """
+        if not self.scaffold:
+            return self.exec(str(action), timeout_s=timeout_s)
+        # Local import keeps the SDK importable even when the optional
+        # adapter deps (e.g. r2egym) are missing on this trainer.
+        from .scaffolds import get_scaffold
+
+        adapter = get_scaffold(self.scaffold)
+        cmd = adapter.render(action)
+        return adapter.parse(self.exec(cmd, timeout_s=timeout_s))
+
 
 class SandboxProvider:
     def __init__(self, *, broker_url: str, token: str, run_id: str) -> None:
@@ -163,22 +179,64 @@ class SandboxProvider:
             run_id=run_id,
         )
 
-    def acquire(self, template: str) -> SandboxHandle:
-        resp = self._broker.post(
-            f"{self._base}/sandboxes",
-            json={"run_id": self.run_id, "template": template},
-        )
+    def acquire(self, template: str, *, scaffold: str | None = None) -> SandboxHandle:
+        body: dict[str, object] = {"run_id": self.run_id, "template": template}
+        if scaffold:
+            body["scaffold"] = scaffold
+        resp = self._broker.post(f"{self._base}/sandboxes", json=body)
         _raise(resp)
         d = resp.json()
-        return SandboxHandle(
+        sb = SandboxHandle(
             id=d["id"],
             run_id=d["run_id"],
             template=d["template"],
             host=d["host"],
             port=d["port"],
             node=d.get("node", ""),
+            scaffold=d.get("scaffold", ""),
             _provider=self,
         )
+        if sb.scaffold:
+            try:
+                self._install_scaffold_requirements(sb)
+            except BaseException:
+                self.release(sb)
+                raise
+        return sb
+
+    def _install_scaffold_requirements(self, sb: SandboxHandle) -> None:
+        """If the scaffold ships a requirements.txt, pip install it.
+
+        Installed to /tmp/scaffold-deps (writable by the sandbox's
+        non-root user; no HOME required) rather than the default
+        site-packages — sandbox images run as a normal uid and don't
+        provision a HOME, so `pip install` / `pip install --user`
+        both hit EACCES. The matching ScaffoldAdapter prepends
+        `PYTHONPATH=/tmp/scaffold-deps` when invoking tools so they
+        find these packages.
+
+        We install at acquire time so the sandbox is fully
+        provisioned by the time the caller gets the handle, and so
+        each sandbox image carries zero scaffold-specific Python deps
+        — the scaffold is self-contained.
+        """
+        req_path = "/opt/agent-tools/requirements.txt"
+        # Use `test -f` via /execute rather than the /exists endpoint,
+        # because sandbox images sandbox /exists to a chroot-like
+        # subtree (e.g. /app) and silently report False for absolute
+        # paths outside it.
+        probe = sb.exec(f"test -f {req_path}")
+        if probe.exit_code != 0:
+            return
+        result = sb.exec(
+            f"python3 -m pip install --target /tmp/scaffold-deps -r {req_path}"
+        )
+        if result.exit_code != 0:
+            tail = (result.stderr or result.stdout or "").strip()[-500:]
+            raise SandboxExecError(
+                f"sandbox {sb.id}: scaffold {sb.scaffold!r} pip install failed "
+                f"(exit {result.exit_code}): {tail}"
+            )
 
     def heartbeat(self, sandbox_id: str) -> None:
         """Send heartbeat to keep sandbox alive. Called automatically by exec(),

@@ -2,13 +2,14 @@
 
 Acquires sandbox pods from the cluster on behalf of trainers, hands back
 `(host, port)` so the trainer talks to the sandbox pod directly (no data
-plane through this service). Tracks idle time per sandbox and reaps
-anything quiet for more than 2h.
+plane through this service).
 
-Endpoints (see platform/broker/API.md):
-  POST   /sandboxes        acquire by template name
-  DELETE /sandboxes/{id}   release one
-  POST   /revoke           release all sandboxes for a run_id
+Endpoints:
+  POST   /register                  trainer announces itself for lifecycle tracking
+  POST   /sandboxes                 acquire by template (and optional scaffold)
+  POST   /heartbeat/{sandbox_id}    refresh idle timer (SDK auto-calls on every exec)
+  DELETE /sandboxes/{id}            release one
+  POST   /revoke                    release all sandboxes for a run_id
 
 Authentication: bearer token shared fleet-wide. Network reachability is
 gated by the tailnet ACL (only tag:trainer can reach this port).
@@ -18,6 +19,19 @@ up the template, inlines its `spec.podTemplate` into a fresh Sandbox CR,
 and waits for the agent-sandbox controller to mark it Ready. The pod
 runs in the cluster pod network; trainers reach it through a Tailscale
 subnet route that advertises the pod CIDR.
+
+If the acquire request names a scaffold, the broker also appends a
+hostPath volume (`/opt/hecaton/agent-tools/<scaffold>/`, staged by
+phase 27) and a readOnly mount at `/opt/agent-tools` to every container
+in the pod spec before creating the CR — SandboxTemplate YAML stays
+scaffold-agnostic.
+
+Lifecycle: a background reaper releases sandboxes idle for more than
+2h and evicts trainers idle for more than 6h (the trainer eviction
+also kicks the device off the tailnet via the Tailscale API). On
+process start, the broker rehydrates its in-memory account book from
+existing Sandbox CRs in the cluster, so a restart does not orphan
+running sandboxes.
 
 Why we do not use the upstream `k8s_agent_sandbox` Python SDK on the
 broker side either:
@@ -33,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import threading
 import time
@@ -66,6 +81,19 @@ TMPL_PLURAL = "sandboxtemplates"
 LABEL_OWNER = "hecaton.io/owner"
 LABEL_RUN_ID = "hecaton.io/run-id"
 LABEL_TEMPLATE = "hecaton.io/template"
+LABEL_SCAFFOLD = "hecaton.io/scaffold"
+
+# Scaffold tools (R2E-Gym etc.) are staged by phase 27 on every host
+# at SCAFFOLD_HOST_BASE/<scaffold>/, mode 0555. When a trainer asks for
+# a scaffold at acquire time we layer a hostPath mount onto the pod
+# spec so the tools land read+execute-only at SCAFFOLD_MOUNT, and we
+# prepend that directory to PATH so the scaffold can invoke tools by
+# bare name. The SandboxTemplate itself stays scaffold-agnostic.
+SCAFFOLD_HOST_BASE = "/opt/hecaton/agent-tools"
+SCAFFOLD_MOUNT = "/opt/agent-tools"
+# Lowercase DNS-ish label: matches phase 27's directory convention and
+# blocks path traversal (no '/', no '..', no leading dot).
+_SCAFFOLD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 @dataclass
@@ -134,18 +162,57 @@ def _first_container_port(pod_spec: dict) -> int:
     return int(ports[0]["containerPort"])
 
 
-def _create_sandbox_cr(name: str, run_id: str, template: str, pod_spec: dict) -> None:
+def _inject_scaffold(pod_spec: dict, scaffold: str) -> None:
+    """Layer a scaffold's tools onto `pod_spec` in place.
+
+    Adds a hostPath volume pointing at SCAFFOLD_HOST_BASE/<scaffold>/
+    (staged by phase 27, mode 0555) and mounts it readOnly at
+    SCAFFOLD_MOUNT in every container. The SandboxTemplate stays
+    scaffold-agnostic — selection happens here, in the trainer-facing
+    acquire path.
+
+    Tools are invoked by absolute path (the SDK's ScaffoldAdapter
+    handles that), so we deliberately don't touch PATH — the sandbox
+    image's own PATH stays intact.
+
+    The caller must have validated `scaffold` against `_SCAFFOLD_RE`
+    before getting here: the value is interpolated into a hostPath.
+    """
+    volumes = pod_spec.setdefault("volumes", [])
+    volumes.append({
+        "name": "agent-tools",
+        "hostPath": {
+            "path": f"{SCAFFOLD_HOST_BASE}/{scaffold}",
+            "type": "Directory",
+        },
+    })
+
+    for container in pod_spec.get("containers", []):
+        mounts = container.setdefault("volumeMounts", [])
+        mounts.append({
+            "name": "agent-tools",
+            "mountPath": SCAFFOLD_MOUNT,
+            "readOnly": True,
+        })
+
+
+def _create_sandbox_cr(
+    name: str, run_id: str, template: str, pod_spec: dict, scaffold: str = "",
+) -> None:
+    labels = {
+        LABEL_OWNER: "hecaton",
+        LABEL_RUN_ID: run_id,
+        LABEL_TEMPLATE: template,
+    }
+    if scaffold:
+        labels[LABEL_SCAFFOLD] = scaffold
     body = {
         "apiVersion": f"{SB_GROUP}/{SB_VERSION}",
         "kind": "Sandbox",
         "metadata": {
             "name": name,
             "namespace": NAMESPACE,
-            "labels": {
-                LABEL_OWNER: "hecaton",
-                LABEL_RUN_ID: run_id,
-                LABEL_TEMPLATE: template,
-            },
+            "labels": labels,
         },
         "spec": {"podTemplate": {"spec": pod_spec}},
     }
@@ -236,12 +303,20 @@ async def acquire(req: Request, _: None = Depends(_check_auth)) -> dict:
     body = await req.json()
     run_id = body["run_id"]
     template = body["template"]
+    scaffold = body.get("scaffold") or ""
+    if scaffold and not _SCAFFOLD_RE.match(scaffold):
+        # Reject anything that could escape SCAFFOLD_HOST_BASE/<scaffold>
+        # or land outside our staging convention. This is the only
+        # input we splice into a hostPath, so validate strictly.
+        raise HTTPException(400, detail=f"invalid scaffold name: {scaffold!r}")
 
     pod_spec = _load_template(template)
     port = _first_container_port(pod_spec)
+    if scaffold:
+        _inject_scaffold(pod_spec, scaffold)
 
     name = f"sb-{secrets.token_hex(6)}"
-    _create_sandbox_cr(name, run_id, template, pod_spec)
+    _create_sandbox_cr(name, run_id, template, pod_spec, scaffold=scaffold)
 
     try:
         host, node = _wait_ready_pod_ip(name)
@@ -262,6 +337,7 @@ async def acquire(req: Request, _: None = Depends(_check_auth)) -> dict:
             tr.last_active = now
 
     return {"id": name, "run_id": run_id, "template": template,
+            "scaffold": scaffold,
             "host": host, "port": port, "node": node}
 
 
@@ -350,7 +426,81 @@ async def _reaper() -> None:
 _reaper_task: asyncio.Task | None = None
 
 
+def _rehydrate_from_cluster() -> None:
+    """Rebuild `_sandboxes` from Sandbox CRs in the cluster.
+
+    The broker's account book is in-memory: a pod restart (image bump,
+    OOM, deployment apply) loses every entry, which leaves Sandbox CRs
+    in the cluster as orphans the idle reaper never touches. The cluster
+    is the durable source of truth, so on startup we list every
+    hecaton-owned Sandbox and reconstruct state from it.
+
+    Everything we need is on the CR — labels carry run_id and template,
+    the inlined podTemplate carries the container port, the live pod
+    carries IP and node. The single field we cannot recover is
+    `last_active`, since we never persisted it; we initialize it to
+    "now" so the reaper gives each adopted sandbox a fresh idle window
+    rather than reaping it immediately. Worst case: a truly idle
+    sandbox lingers up to SANDBOX_IDLE_TIMEOUT_S extra after a restart.
+    """
+    try:
+        resp = _custom.list_namespaced_custom_object(
+            group=SB_GROUP, version=SB_VERSION,
+            namespace=NAMESPACE, plural=SB_PLURAL,
+            label_selector=f"{LABEL_OWNER}=hecaton",
+        )
+    except client.exceptions.ApiException as exc:
+        print(f"rehydrate: list failed: {exc}", flush=True)
+        return
+
+    now = time.monotonic()
+    adopted = 0
+    for sb in resp.get("items", []):
+        meta = sb.get("metadata", {})
+        name = meta.get("name") or ""
+        labels = meta.get("labels", {}) or {}
+        run_id = labels.get(LABEL_RUN_ID, "")
+        template = labels.get(LABEL_TEMPLATE, "")
+        if not name or not run_id:
+            continue
+
+        # Port is inlined on the Sandbox itself (we put it there at
+        # acquire time), so we don't need to round-trip to the template.
+        pod_spec = (sb.get("spec", {}) or {}).get("podTemplate", {}).get("spec") or {}
+        try:
+            port = _first_container_port(pod_spec)
+        except HTTPException:
+            print(f"rehydrate: skip {name} (no container port)", flush=True)
+            continue
+
+        # Pod IP + node come from the live pod. If the pod isn't there
+        # or has no IP yet, skip — the controller will reconcile it and
+        # we'll pick it up on a future broker restart.
+        status = sb.get("status", {}) or {}
+        pod_name = status.get("podName") or name
+        try:
+            pod = _core.read_namespaced_pod(pod_name, NAMESPACE)
+        except client.exceptions.ApiException:
+            print(f"rehydrate: skip {name} (pod {pod_name} missing)", flush=True)
+            continue
+        host = pod.status.pod_ip or ""
+        if not host:
+            print(f"rehydrate: skip {name} (no pod IP yet)", flush=True)
+            continue
+        node = pod.spec.node_name or ""
+
+        with _state_lock:
+            _sandboxes[name] = SandboxState(
+                id=name, run_id=run_id, template=template,
+                host=host, port=port, node=node, last_active=now,
+            )
+        adopted += 1
+
+    print(f"rehydrate: adopted {adopted} sandbox(es) from cluster", flush=True)
+
+
 @app.on_event("startup")
 async def _start_reaper() -> None:
     global _reaper_task
+    _rehydrate_from_cluster()
     _reaper_task = asyncio.create_task(_reaper())

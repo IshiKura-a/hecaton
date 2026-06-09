@@ -93,12 +93,14 @@ if (( ${#others[@]} > 0 )); then
     log "==> $h: copying tarball"
     scp_to "$h" "$local_tar" /tmp/hecaton-broker.tar
     log "==> $h: importing into k3s containerd"
-    ssh_to "$h" 'sudo k3s ctr images import /tmp/hecaton-broker.tar && rm -f /tmp/hecaton-broker.tar'
+    # `sudo rm` because the tarball may end up root-owned after import,
+    # and /tmp's sticky bit forbids non-owner deletion.
+    ssh_to "$h" 'sudo k3s ctr images import /tmp/hecaton-broker.tar && sudo rm -f /tmp/hecaton-broker.tar'
   done
 fi
 
 # 5) clean up build artifact on the build host
-ssh_to "$build_host" 'rm -f /tmp/hecaton-broker.tar && rm -rf '"$remote_src"
+ssh_to "$build_host" 'sudo rm -f /tmp/hecaton-broker.tar && rm -rf '"$remote_src"
 
 log ""
 log "image present on all fleet nodes as: $image"
