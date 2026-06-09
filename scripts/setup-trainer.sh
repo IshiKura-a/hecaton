@@ -68,14 +68,16 @@ tailscale --socket="$TS_SOCK" up \
 ts_ip="$(tailscale --socket="$TS_SOCK" ip -4 | head -1)"
 log "trainer tailnet ip: $ts_ip"
 
-# 4. install the SDK. If the laptop scp'd this script alongside the envs/
-# package, install from a local path; otherwise fall back to git+https.
+# 4. install the SDK editable so `git pull` is enough to pick up
+# changes — no re-running this script after every upstream bump.
+# Normal path: trainer git-cloned this repo, HECATON_SDK_PATH=$PWD/envs.
+# Fallback (no local checkout): pip install straight from GitHub; that
+# install is a snapshot, so upgrading then needs another pip install.
 if [[ -d "${HECATON_SDK_PATH:-}" ]]; then
-  log "installing hecaton-envs from $HECATON_SDK_PATH"
-  pip install --user -q "$HECATON_SDK_PATH"
+  log "installing hecaton-envs (editable) from $HECATON_SDK_PATH"
+  pip install --user -q -e "$HECATON_SDK_PATH"
 else
-  log "installing hecaton-envs from git (fallback)"
-  # NOTE: replace this URL once we publish to PyPI or a private index.
+  log "installing hecaton-envs from git (fallback; trainer must reach GitHub)"
   pip install --user -q "git+https://github.com/IshiKura-a/hecaton.git#subdirectory=envs" \
     || die "failed to install hecaton-envs; set HECATON_SDK_PATH to a local checkout"
 fi

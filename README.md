@@ -77,21 +77,52 @@ When it's done:
 KUBECONFIG=config/kubeconfig kubectl get nodes -o wide
 ```
 
-### 3. Run (on each trainer host)
+### 3. Connect a trainer
+
+The trainer host sets itself up — the laptop has no access to it. On the trainer:
 
 ```bash
-# scp scripts/setup-trainer.sh + envs/ to the host, then:
+git clone https://github.com/IshiKura-a/hecaton.git ~/hecaton
+cd ~/hecaton
+
 export TS_AUTHKEY_TRAINER=tskey-auth-...
 export HECATON_BROKER_URL=http://<any-fleet-host-tailnet-ip>:30443
 export HECATON_TOKEN=...
 export HECATON_RUN_ID=my-run-2026-06-08
-export HECATON_SDK_PATH=/path/to/envs
-bash setup-trainer.sh
+export HECATON_SDK_PATH=$PWD/envs
+bash scripts/setup-trainer.sh
 ```
+
+The script joins the tailnet, installs `hecaton-envs` editable from `$HECATON_SDK_PATH`, and prints the env block your trainer process needs to `source`. Picking up an SDK change is just `git pull` in `~/hecaton/` — no re-run needed because the install is editable.
 
 The trainer process then `from hecaton_envs import SandboxProvider`, `provider.acquire(template="...")` (optionally `scaffold="r2egym"` to mount a scaffold's tools), `sb.exec("...")` for raw bash or `sb.invoke(action)` when a scaffold is bound, `provider.release(sb)`.
 
-A complete docker-based demo lives in [examples/trainer-smoke](examples/trainer-smoke/).
+A complete docker-based demo lives in [examples/trainer-smoke](examples/trainer-smoke/). For iterating on hecaton itself (SDK / broker / scaffolds), see [Testing & deploying changes](#testing--deploying-changes) — that flow uses a throwaway dev trainer, not your real one.
+
+## Adding a new sandbox type
+
+A sandbox type = one OCI image that implements the [agent-sandbox HTTP contract](https://github.com/kubernetes-sigs/agent-sandbox), wrapped in a `SandboxTemplate` CR the broker references by name.
+
+1. **Build the image** and push it somewhere fleet nodes can pull from (ghcr.io / your registry / offline import). The image only needs to expose the agent-sandbox `/execute` endpoint; if any scaffold you'll use ships a `requirements.txt`, also ensure `python3 -m pip` works and PyPI is reachable.
+
+2. **Drop a SandboxTemplate yaml** into [config/templates/](config/templates/). Use [config/examples/templates/swe-python.yaml](config/examples/templates/swe-python.yaml) as a starting point — it's a complete reference with image, port, resource requests. The `metadata.name` is what trainers pass to `provider.acquire(template=...)`.
+
+3. **Apply**:
+
+   ```bash
+   bash bootstrap/cluster/24-apply-templates.sh   # or `bash bootstrap/install.sh` for full re-bootstrap
+   ```
+
+   Idempotent (`kubectl apply`). New templates land immediately; trainers can acquire by name on the next call.
+
+4. **Verify**:
+
+   ```bash
+   KUBECONFIG=config/kubeconfig kubectl get sandboxtemplates -n hecaton-sandboxes
+   make dev host=<alias>   # smoke (acquire → exec → release)
+   ```
+
+Nothing in the broker or trainer SDK knows about specific templates — sandbox types are purely cluster data.
 
 ## Scaffold tools
 
@@ -124,30 +155,48 @@ bash bootstrap/install.sh
 
 Phase 27 will refuse to re-stage while any sandbox is alive (it would silently swap tools mid-rollout, since hostPath is a bind mount). Release everything first — `provider.revoke(...)` on each trainer, or `kubectl delete sandbox -n hecaton-sandboxes --all` for ops — then re-run.
 
-## Development workflow
+## Testing & deploying changes
 
-One command, `make dev`, does the minimum work to bring the cluster + a test trainer up to your current checkout. Each phase compares a content hash against the deployed state and skips itself if nothing changed.
+Three commands, one per scope:
+
+| Scope | Command | What it does |
+| --- | --- | --- |
+| First-time install of a fresh fleet | `bash bootstrap/install.sh` | Tailscale → k3s → device plugins → agent-sandbox → templates → subnet router → scaffolds → broker. Idempotent; re-run after any fix. |
+| Iterate on your laptop → dev fleet | `make dev [host=<alias>]` | Hash-gated: only rebuilds & redeploys what actually changed. With `host=`, also runs a smoke script on that trainer. |
+| Promote a dev change to production | `make release` | Refuses dirty tree, `git push` HEAD on main, waits for `broker-image.yml` CI to publish `ghcr.io/.../hecaton-broker:sha-<sha>`, pins `.env`, redeploys the broker. |
+
+### `make dev` in detail
+
+One command brings the cluster + an optional test trainer up to your current checkout. Each phase compares a content hash against the deployed state and skips itself if nothing changed.
 
 ```bash
 make dev                       # stage scaffolds + redeploy broker (whatever changed)
-make dev host=Mi300X           # also rsync sources + rebuild trainer base image
-                               # if needed + run examples/trainer-smoke/run_r2egym.py
+make dev host=<ssh-alias>      # also rsync sources + rebuild trainer image
+                               # if needed + run run_r2egym.py
+make dev host=<alias> smoke=run_<other>.py   # pick a different smoke script
 ```
-
-What each step does and when it runs:
 
 | Phase | Triggers when… | Action |
 | --- | --- | --- |
 | scaffold | `scaffolds/` content hash differs from last stage | wraps `bootstrap/cluster/27-stage-agent-tools.sh` |
 | broker | `platform/broker/` content hash ≠ the image tag the cluster is running | build + import + `kubectl set image` to `hecaton-broker:dev-<hash>` |
 | trainer-image | trainer Dockerfile or entrypoint hash changed (and `host=` set) | rsync repo to host, `docker build` in `HECATON_SOURCE=mount` mode |
-| smoke | `host=` set | `docker run` the trainer image with the repo bind-mounted; `trainer-entrypoint.sh` `pip install -e`s the mounted SDK so trainer / smoke script changes never need a rebuild |
+| smoke | `host=` set | `docker run` the trainer image with the repo bind-mounted as the host user; `trainer-entrypoint.sh` `pip install --user`s the mounted SDK so SDK / smoke script changes never need a rebuild |
 
 Surgical targets exist for each phase (`make dev-scaffold`, `make dev-broker`, `make dev-trainer-image host=…`, `make dev-smoke host=…`). Env knobs: `SKIP_BROKER=1`, `FORCE_BROKER=1`, etc.
 
 Provenance: every locally built broker image carries `hecaton.git.sha` / `hecaton.git.dirty` / `hecaton.build.timestamp` labels — `docker inspect` (or `kubectl describe pod`) tells you exactly which commit any running broker came from.
 
-Production updates still go through `bootstrap/install.sh` (idempotent) for cluster-wide changes, and the `broker-image.yml` GitHub Actions workflow for canonical broker images on `ghcr.io`.
+### `make release` in detail
+
+`make release` is `make dev`'s production sibling — instead of building local images, it pushes to GitHub and lets CI build the canonical `ghcr.io` image. Preconditions: clean tree on `main`, `gh` authenticated (covered by `bash scripts/preflight.sh`). The same flow without the wrapper:
+
+```bash
+git push origin main                                     # triggers .github/workflows/broker-image.yml
+# wait for it...
+# edit .env: BROKER_IMAGE=ghcr.io/<owner>/hecaton-broker:sha-<full-sha>
+bash bootstrap/cluster/26-install-broker.sh
+```
 
 ## Conventions
 
