@@ -176,7 +176,7 @@ Three commands, one per scope:
 | --- | --- | --- |
 | First-time install of a fresh fleet | `bash bootstrap/install.sh` | Tailscale → k3s → device plugins → agent-sandbox → sandboxes → subnet router → scaffolds → broker. Idempotent; re-run after any fix. |
 | Iterate on your laptop → dev fleet | `make dev [host=<alias>]` | Hash-gated: only rebuilds & redeploys what actually changed. With `host=`, also runs a smoke script on that trainer. |
-| Promote a dev change to production | `make release` | Refuses dirty tree, `git push` HEAD on main, waits for `broker-image.yml` CI to publish `ghcr.io/.../hecaton-broker:sha-<sha>`, pins `.env`, redeploys the broker. |
+| Promote a dev change to production | `make release` | Refuses dirty tree, `git push` HEAD on main, waits for `broker-image.yml` CI to publish `ghcr.io/.../hecaton-broker:sha-<sha>`, pins `.env`, runs `bootstrap/install.sh` so broker + sandboxes + scaffolds all converge to HEAD. |
 
 ### `make dev` in detail
 
@@ -202,14 +202,16 @@ Provenance: every locally built broker image carries `hecaton.git.sha` / `hecato
 
 ### `make release` in detail
 
-`make release` is `make dev`'s production sibling — instead of building local images, it pushes to GitHub and lets CI build the canonical `ghcr.io` image. Preconditions: clean tree on `main`, `gh` authenticated (covered by `bash scripts/preflight.sh`). The same flow without the wrapper:
+`make release` is `make dev`'s production sibling — instead of building local images, it pushes to GitHub, lets CI build the canonical `ghcr.io` image, then runs `bootstrap/install.sh` so every phase (broker, sandboxes, scaffolds, ...) converges. Preconditions: clean tree on `main`, `gh` authenticated (covered by `bash scripts/preflight.sh`). The same flow without the wrapper:
 
 ```bash
 git push origin main                                     # triggers .github/workflows/broker-image.yml
 # wait for it...
 # edit .env: BROKER_IMAGE=ghcr.io/<owner>/hecaton-broker:sha-<full-sha>
-bash bootstrap/cluster/26-install-broker.sh
+bash bootstrap/install.sh
 ```
+
+If any Sandbox CR is alive in the cluster, phase 27 (scaffold staging) refuses to re-stage rather than swap mounts mid-rollout. Release sandboxes first (`kubectl delete sandbox -n hecaton-sandboxes --all`) and re-run.
 
 ## Conventions
 

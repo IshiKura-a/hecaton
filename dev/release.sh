@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 #
-# Production broker release: push HEAD, wait for the CI image build,
-# pin .env to the resulting ghcr.io tag, and redeploy the broker.
+# Production release: push HEAD, wait for the broker image to land on
+# ghcr.io, pin .env to that tag, and run the full bootstrap so the
+# cluster's broker + sandboxes + scaffolds all converge to this commit.
 #
 # Run from a clean tree on main:
 #   make release
 #
-# What it does (idempotent at each step):
+# Steps (each idempotent):
 #   1. refuse if working tree is dirty or branch != main
 #   2. `git push` if HEAD isn't on origin yet
 #   3. `gh run watch` the broker-image.yml run for this sha until success
 #   4. rewrite .env: BROKER_IMAGE=ghcr.io/<owner>/hecaton-broker:sha-<full>
-#   5. bash bootstrap/cluster/26-install-broker.sh
+#   5. bash bootstrap/install.sh
+#
+# Note on phase 27 (stage scaffold tools): if any Sandbox CR is alive in
+# the cluster, that phase fails by design rather than swapping mounts
+# under a live sandbox. Release sandboxes first (provider.revoke or
+# `kubectl delete sandbox -n hecaton-sandboxes --all`), then re-run.
 
 set -euo pipefail
 
@@ -82,9 +88,9 @@ awk -v new="BROKER_IMAGE=$new_image" '
 ' "$env_file" > "$tmp"
 mv "$tmp" "$env_file"
 
-# 5. redeploy
-log "redeploying broker"
-bash "$HECATON_ROOT/bootstrap/cluster/26-install-broker.sh"
+# 5. full converge: every phase, idempotent.
+log "running bootstrap/install.sh to converge fleet to $short"
+bash "$HECATON_ROOT/bootstrap/install.sh"
 
 log ""
-log "release ok: broker now running $new_image"
+log "release ok: cluster converged to $short (broker $new_image)"
