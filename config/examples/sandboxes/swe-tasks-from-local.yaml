@@ -1,0 +1,18 @@
+# Bulk-register sandboxes from a local jsonl file (no remote dataset
+# fetch). Useful for air-gapped fleets or for testing the rendering
+# pipeline. The `path` is resolved relative to this yaml's directory.
+#
+# Example contents of swe-tasks.jsonl (alongside this file):
+#   {"image": "ghcr.io/your-org/swe-task-0001:v1"}
+#   {"image": "ghcr.io/your-org/swe-task-0002:v1", "cpu": "2", "memory": "4Gi"}
+
+kind: SandboxSource
+
+source:
+  type: local
+  path: swe-tasks.jsonl   # also supports .parquet; absolute paths work too
+
+port: 8888
+gpu: 0
+cpu: "1"
+memory: 2Gi

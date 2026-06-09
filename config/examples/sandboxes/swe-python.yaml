@@ -1,0 +1,15 @@
+# Single hand-authored sandbox. Drop a file like this into
+# config/sandboxes/ (or rename and copy this one) and run
+# `bash bootstrap/cluster/24-apply-sandboxes.sh`.
+kind: Sandbox
+name: swe-python
+
+# Replace with whatever you built that implements the agent-sandbox
+# HTTP contract.
+image: ghcr.io/your-org/swe-python:latest
+
+port: 8888       # container port the sandbox listens on; default 8888
+gpu: 0           # nvidia.com/gpu request; default 0
+cpu: "1"         # k8s cpu request; default 1
+memory: 2Gi      # k8s memory request; default 2Gi
+# env: { KEY: value }   # optional env vars passed into the container

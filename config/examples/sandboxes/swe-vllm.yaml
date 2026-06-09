@@ -1,0 +1,14 @@
+kind: Sandbox
+name: swe-vllm
+
+image: ghcr.io/your-org/swe-vllm:latest
+port: 8888
+
+gpu: 1
+# Match the device plugin the fleet runs:
+#   nvidia  -> nvidia.com/gpu (default)
+#   amd     -> amd.com/gpu (set this when running rocm-k8s-device-plugin)
+gpu_vendor: amd
+
+cpu: "4"
+memory: 32Gi

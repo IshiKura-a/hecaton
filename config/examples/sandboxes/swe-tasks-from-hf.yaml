@@ -1,0 +1,28 @@
+# Bulk-register sandboxes from a HuggingFace dataset. Each row in the
+# referenced jsonl/parquet file becomes one SandboxTemplate in the
+# cluster. Defaults below apply to every row; rows can override on a
+# per-image basis.
+#
+# Example row (jsonl):
+#   {"image": "xingyaoww/sweb.eval.x86_64.getmoto_s_moto-5841:latest"}
+#   {"image": "xingyaoww/sweb.eval.x86_64.flask_s_flask-1234:v2",
+#    "cpu": "2", "memory": "4Gi", "env": {"OMP_NUM_THREADS": "2"}}
+#
+# Recognized per-row fields: image (required), name, port, gpu,
+# gpu_vendor, cpu, memory, env. Anything else is ignored.
+
+kind: SandboxSource
+
+source:
+  type: huggingface
+  repo: your-org/swe-task-images   # private datasets need HF_TOKEN in env
+  file: images.jsonl               # also supports .parquet
+  revision: main                   # commit/tag/branch; pin for reproducibility
+
+# Defaults: applied to every row unless the row overrides.
+port: 8888
+gpu: 0
+gpu_vendor: nvidia
+cpu: "1"
+memory: 2Gi
+# env: { SHARED_KEY: shared_value }

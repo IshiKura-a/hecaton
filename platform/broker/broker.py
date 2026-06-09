@@ -83,6 +83,14 @@ LABEL_RUN_ID = "hecaton.io/run-id"
 LABEL_TEMPLATE = "hecaton.io/template"
 LABEL_SCAFFOLD = "hecaton.io/scaffold"
 
+# Marker that bootstrap/cluster/24-apply-sandboxes.py stamps on every
+# SandboxTemplate it renders from config/sandboxes/. The broker refuses
+# to acquire any template that isn't carrying it, so something dropped
+# into the cluster out-of-band (`kubectl apply` by hand, leftover from
+# an earlier deploy, ...) cannot be acquired by trainers.
+LABEL_MANAGED_BY = "hecaton.io/managed-by"
+MANAGED_VALUE = "hecaton"
+
 # Scaffold tools (R2E-Gym etc.) are staged by phase 27 on every host
 # at SCAFFOLD_HOST_BASE/<scaffold>/, mode 0555. When a trainer asks for
 # a scaffold at acquire time we layer a hostPath mount onto the pod
@@ -134,7 +142,12 @@ _custom = client.CustomObjectsApi()
 
 
 def _load_template(name: str) -> dict:
-    """Fetch a SandboxTemplate and return its `spec.podTemplate.spec`."""
+    """Fetch a SandboxTemplate and return its `spec.podTemplate.spec`.
+
+    Refuses templates that aren't carrying the hecaton.io/managed-by
+    label — declaring sandboxes goes through config/sandboxes/ +
+    phase 24, not ad-hoc kubectl apply.
+    """
     try:
         tmpl = _custom.get_namespaced_custom_object(
             group=TMPL_GROUP, version=TMPL_VERSION,
@@ -145,6 +158,11 @@ def _load_template(name: str) -> dict:
         if exc.status == 404:
             raise HTTPException(404, detail=f"template {name!r} not found") from exc
         raise
+    labels = tmpl.get("metadata", {}).get("labels") or {}
+    if labels.get(LABEL_MANAGED_BY) != MANAGED_VALUE:
+        # Same 404 the trainer sees for a truly missing name — we don't
+        # want to leak the existence of unmanaged templates.
+        raise HTTPException(404, detail=f"template {name!r} not found")
     pod_spec = tmpl.get("spec", {}).get("podTemplate", {}).get("spec")
     if not pod_spec:
         raise HTTPException(500, detail=f"template {name!r} has no podTemplate.spec")

@@ -25,7 +25,7 @@ phases=(
   "bootstrap/cluster/21-install-k3s-agent.sh"
   "bootstrap/cluster/22-install-device-plugins.sh"
   "bootstrap/cluster/23-install-agent-sandbox.sh"
-  "bootstrap/cluster/24-apply-templates.sh"
+  "bootstrap/cluster/24-apply-sandboxes.sh"
   "bootstrap/cluster/25-install-subnet-router.sh"
   "bootstrap/cluster/27-stage-agent-tools.sh"
   # Broker image must be on the fleet nodes before phase 26 applies the
