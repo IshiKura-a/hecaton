@@ -10,7 +10,9 @@
 # Steps (each idempotent):
 #   1. refuse if working tree is dirty or branch != main
 #   2. `git push` if HEAD isn't on origin yet
-#   3. `gh run watch` the broker-image.yml run for this sha until success
+#   3. dispatch broker-image.yml on HEAD and wait for it (every release
+#      gets a freshly built broker image, even when nothing under
+#      broker code paths changed)
 #   4. rewrite .env: BROKER_IMAGE=ghcr.io/<owner>/hecaton-broker:sha-<full>
 #   5. bash bootstrap/install.sh
 #
@@ -49,22 +51,32 @@ else
   log "$short already on origin/$branch"
 fi
 
-# 3. find or wait for the broker-image workflow run on this sha
-log "looking up broker-image.yml run for $short"
+# 3. trigger a broker-image build for this exact sha and wait for it.
+# We always dispatch (rather than relying on the workflow's push-paths
+# filter) so every release gets a freshly built image even when nothing
+# under platform/broker/ or envs/ changed. Idempotent: if the same sha
+# was already built, ghcr just gets the same digest re-pushed.
+log "dispatching broker-image.yml for $short"
+# Capture the wall-clock time just before dispatch so we can find the
+# run we just created (gh has no direct dispatch -> run-id link).
+since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+gh workflow run broker-image.yml --ref "$sha"
+
+log "looking up the dispatched run"
 run_id=""
-for attempt in $(seq 1 12); do
+for attempt in $(seq 1 24); do
   run_id="$(gh run list \
     --workflow broker-image.yml \
-    --branch "$branch" \
-    --commit "$sha" \
+    --event workflow_dispatch \
+    --created ">=$since" \
     --limit 1 \
-    --json databaseId \
-    --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+    --json databaseId,headSha \
+    --jq ".[] | select(.headSha == \"$sha\") | .databaseId" 2>/dev/null || true)"
   [[ -n "$run_id" ]] && break
-  log "  no run yet for $short (attempt $attempt/12), sleeping 5s"
+  log "  no dispatched run yet (attempt $attempt/24), sleeping 5s"
   sleep 5
 done
-[[ -n "$run_id" ]] || die "broker-image.yml never started for $short — did the path filter match? (see .github/workflows/broker-image.yml)"
+[[ -n "$run_id" ]] || die "broker-image.yml dispatch never produced a run for $short"
 
 log "watching run $run_id"
 gh run watch "$run_id" --exit-status
