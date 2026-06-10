@@ -17,6 +17,15 @@ alertmanager:
 
 prometheus:
   prometheusSpec:
+    # Keep Prometheus on the k3s server. It scrapes pod IPs directly, so
+    # placing it on an agent can make dashboards depend on cross-agent pod
+    # networking paths that are intentionally constrained by the tailnet.
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
     retention: 7d
     resources:
       requests:

@@ -77,8 +77,6 @@ else
       --kubelet-arg=max-pods=$max_pods \
       --kubelet-arg=image-gc-high-threshold=85 \
       --kubelet-arg=image-gc-low-threshold=70 \
-      --kubelet-arg=serialize-image-pulls=false \
-      --kubelet-arg=max-parallel-image-pulls=16 \
       --kubelet-arg=eviction-hard= \
       --kubelet-arg=eviction-soft=" \
     sh -

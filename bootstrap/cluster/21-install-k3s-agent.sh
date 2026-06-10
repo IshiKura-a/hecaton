@@ -37,7 +37,8 @@ force="${HECATON_FORCE:-}"
 
 log "k3s $K3S_VERSION agents: ${agents[*]}  joining $server_url"
 
-remote_script=$(cat <<'REMOTE'
+_agent_remote_script() {
+cat <<'REMOTE'
 set -euo pipefail
 WANT="$K3S_VERSION_REMOTE"
 
@@ -73,24 +74,73 @@ curl -sfL https://get.k3s.io | \
     --kubelet-arg=max-pods=$max_pods \
     --kubelet-arg=image-gc-high-threshold=85 \
     --kubelet-arg=image-gc-low-threshold=70 \
-    --kubelet-arg=serialize-image-pulls=false \
-    --kubelet-arg=max-parallel-image-pulls=16 \
     --kubelet-arg=eviction-hard= \
     --kubelet-arg=eviction-soft=" \
   sh -
 
-systemctl is-active --quiet k3s-agent \
-  || { echo "k3s-agent failed to start" >&2; exit 1; }
-REMOTE
-)
+for _ in $(seq 1 90); do
+  state="$(systemctl is-active k3s-agent || true)"
+  case "$state" in
+    active)
+      exit 0
+      ;;
+    failed)
+      systemctl status k3s-agent --no-pager >&2 || true
+      journalctl -u k3s-agent --no-pager -n 80 >&2 || true
+      echo "k3s-agent failed to start" >&2
+      exit 1
+      ;;
+  esac
+  sleep 2
+done
 
+systemctl status k3s-agent --no-pager >&2 || true
+journalctl -u k3s-agent --no-pager -n 80 >&2 || true
+echo "timed out waiting for k3s-agent to become active" >&2
+exit 1
+REMOTE
+}
+
+remote_script="$(_agent_remote_script)"
+
+pids=()
+tmpdir="$(mktemp -d -t hecaton-k3s-agent.XXXX)"
 for h in "${agents[@]}"; do
   max_pods="$(inventory_field "$h" max_pods 2>/dev/null || true)"
   env_prefix="K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") K3S_URL_REMOTE=$(printf '%q' "$server_url") K3S_TOKEN_REMOTE=$(printf '%q' "$node_token") MAX_PODS_REMOTE=$(printf '%q' "$max_pods") FORCE_REMOTE=$(printf '%q' "$force")"
   log "installing agent on $h (max_pods=${max_pods:-auto/nproc})"
-  ssh_to "$h" "$env_prefix bash -s" <<< "$remote_script" &
+  {
+    ssh_to "$h" "$env_prefix bash -s" <<< "$remote_script" \
+      >"$tmpdir/$h.out" 2>&1
+    echo $? > "$tmpdir/$h.rc"
+  } &
+  pids+=("$!")
 done
-wait
+
+for pid in "${pids[@]}"; do
+  wait "$pid" || true
+done
+
+failed=()
+for h in "${agents[@]}"; do
+  cat "$tmpdir/$h.out"
+  rc="$(cat "$tmpdir/$h.rc")"
+  if [[ "$rc" != 0 ]]; then
+    warn "$h: k3s-agent install failed (rc=$rc)"
+    failed+=("$h")
+  fi
+done
+rm -rf "$tmpdir"
+
+if (( ${#failed[@]} > 0 )); then
+  die "${#failed[@]} k3s agent install(s) failed: ${failed[*]}"
+fi
+
+for h in "${agents[@]}"; do
+  node="$(node_name_for "$h")"
+  log "waiting for node/$node to be Ready"
+  KUBECONFIG="$kc_file" kubectl wait --for=condition=Ready "node/$node" --timeout=180s
+done
 
 log "verify:"
 log "  KUBECONFIG=$HECATON_ROOT/config/kubeconfig kubectl get nodes -o wide"

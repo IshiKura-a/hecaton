@@ -12,6 +12,7 @@ Idempotent: re-running converges; rollout-status waits for each DS.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -152,6 +153,26 @@ def report_capacity(host: inventory.Host, node: str, vendor: remote.Vendor) -> N
     log(f"  {node:<22} {res} = {out or '0'}")
 
 
+def wait_for_capacity(host: inventory.Host, node: str, vendor: remote.Vendor) -> None:
+    """Wait for kubelet to publish device-plugin capacity after DS rollout."""
+    res = _RESOURCE_FOR_VENDOR[vendor]
+    escaped = res.replace(".", r"\.")
+    expected = host.gpu_count if host.gpu_count is not None else 1
+    for _ in range(60):
+        out = kubectl_capture(
+            "get", "node", node,
+            "-o", f"jsonpath={{.status.capacity.{escaped}}}",
+        ).strip()
+        try:
+            actual = int(out or "0")
+        except ValueError:
+            actual = 0
+        if actual >= expected:
+            return
+        time.sleep(2)
+    die(f"{node}: timed out waiting for {res} capacity >= {expected}")
+
+
 def main() -> int:
     v = versions.load("gpu-version.sh")
     amd_image = v.get("AMD_DEVICE_PLUGIN_IMAGE") or die("AMD_DEVICE_PLUGIN_IMAGE not set")
@@ -167,11 +188,13 @@ def main() -> int:
         node = remote.node_name(h)
         log(f"==> {h.name} ({node}): vendor=amd cap={h.gpu_count or '<all>'}")
         apply_and_wait(amd_daemonset(h, node, amd_image), f"amdgpu-device-plugin-{h.name}")
+        wait_for_capacity(h, node, remote.Vendor.AMD)
 
     for h in by_vendor[remote.Vendor.NVIDIA]:
         node = remote.node_name(h)
         log(f"==> {h.name} ({node}): vendor=nvidia cap={h.gpu_count or '<all>'}")
         apply_and_wait(nvidia_daemonset(h, node, nvidia_image), f"nvidia-device-plugin-{h.name}")
+        wait_for_capacity(h, node, remote.Vendor.NVIDIA)
 
     log("")
     log("advertised GPU capacity:")

@@ -6,4 +6,4 @@
 #
 # Format: vX.Y.Z+k3sN
 
-K3S_VERSION="v1.35.5+k3s1"
+K3S_VERSION="v1.34.8+k3s1"
