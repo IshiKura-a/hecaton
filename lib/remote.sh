@@ -39,6 +39,25 @@ scp_to() {
       "$local_path" "$target:$remote_path"
 }
 
+# k8s node name = remote machine's hostname, lowercased. k3s registers
+# nodes under that, so anything that needs to address a node via
+# kubectl must translate inventory name -> k8s node name through here.
+# Cached at $HECATON_ROOT/.cache/node-name/<host>; wipe to force re-probe.
+node_name_for() {
+  local host="$1"
+  local cache="$HECATON_ROOT/.cache/node-name"
+  mkdir -p "$cache"
+  local cached="$cache/$host"
+  if [[ -f "$cached" ]]; then
+    cat "$cached"
+    return
+  fi
+  local name
+  name="$(ssh_to "$host" 'hostname' | tr '[:upper:]' '[:lower:]')"
+  echo "$name" > "$cached"
+  echo "$name"
+}
+
 # Run the same bash snippet (read from stdin) on each named host in
 # parallel. Each host's combined stdout+stderr is buffered to a tempfile
 # and replayed once all hosts finish. Exit code is non-zero if any host
@@ -91,4 +110,21 @@ parallel_each_host() {
   if (( ${#failed[@]} > 0 )); then
     die "${#failed[@]} host(s) failed: ${failed[*]}"
   fi
+}
+
+# Warm a per-host fact by running the given function in parallel,
+# discarding its output. Subsequent serial calls hit the on-disk
+# cache and return instantly.
+#
+#   parallel_warm gpu_vendor "host1" "host2" ...
+parallel_warm() {
+  local fn="$1"; shift
+  local h pids=()
+  for h in "$@"; do
+    "$fn" "$h" >/dev/null 2>&1 &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
 }

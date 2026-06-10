@@ -21,9 +21,9 @@ source "$HECATON_ROOT/lib/inventory.sh"
 source "$HECATON_ROOT/lib/remote.sh"
 source "$HECATON_ROOT/lib/version.sh"
 
-# Caller-provided BROKER_IMAGE (e.g. from dev/iter.sh) must win over
-# whatever's in .env — load_env does `set -a; source .env` which would
-# otherwise silently overwrite it.
+# An environment-supplied BROKER_IMAGE must win over whatever's in
+# .env — load_env does `set -a; source .env` which would otherwise
+# silently overwrite it.
 _broker_image_override="${BROKER_IMAGE:-}"
 load_env
 if [[ -n "$_broker_image_override" ]]; then
@@ -126,4 +126,4 @@ ssh_to "$build_host" 'sudo rm -f /tmp/hecaton-broker.tar && rm -rf '"$remote_src
 log ""
 log "image present on all fleet nodes as: $image"
 log "set BROKER_IMAGE=$image in .env if it isn't already, then:"
-log "  bash bootstrap/cluster/26-install-broker.sh"
+log "  bash bootstrap/cluster/28-install-broker.sh"

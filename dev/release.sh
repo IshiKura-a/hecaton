@@ -16,9 +16,9 @@
 #   4. rewrite .env: BROKER_IMAGE=ghcr.io/<owner>/hecaton-broker:sha-<full>
 #   5. bash bootstrap/install.sh
 #
-# Note on phase 27 (stage scaffold tools): if any Sandbox CR is alive in
-# the cluster, that phase fails by design rather than swapping mounts
-# under a live sandbox. Release sandboxes first (provider.revoke or
+# Note: if any Sandbox CR is alive in the cluster, the scaffold-staging
+# phase fails by design rather than swapping mounts under a live
+# sandbox. Release sandboxes first (provider.revoke or
 # `kubectl delete sandbox -n hecaton-sandboxes --all`), then re-run.
 
 set -euo pipefail

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Phase 22: install per-host GPU device plugins. Thin wrapper around
-# the Python implementation. Logic lives in 22-install-device-plugins.py.
+# Phase 27: install monitoring stack. Thin wrapper around the Python
+# implementation. Logic lives in 27-install-monitoring.py.
 
 set -euo pipefail
 
@@ -14,6 +14,7 @@ source "$HECATON_ROOT/lib/common.sh"
 export KUBECONFIG="$HECATON_ROOT/config/kubeconfig"
 [[ -f "$KUBECONFIG" ]] || die "missing $KUBECONFIG (run earlier bootstrap phases first)"
 require_cmd kubectl
+require_cmd helm
 
 py="$(bootstrap_uv)"
-exec "$py" "$HERE/22-install-device-plugins.py" "$@"
+exec "$py" "$HERE/27-install-monitoring.py" "$@"

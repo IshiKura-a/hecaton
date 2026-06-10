@@ -1,8 +1,9 @@
 # Git + content-hash helpers for dev iteration.
 #
-# Used by dev/iter.sh to decide whether a phase needs to re-run, and
-# by platform/broker/build-and-import.sh to stamp images with the
-# commit they were built from.
+# - git_sha / git_sha_short: current commit
+# - git_dirty: '1' if the working tree has uncommitted changes, empty otherwise
+# - hash_paths PATH ...: deterministic content hash of regular files under
+#   the given paths, used to gate "has X changed since last deploy?"
 #
 # Source this file after lib/common.sh.
 

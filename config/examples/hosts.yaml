@@ -22,6 +22,9 @@
 # `gpu_count: 4` and only indices 0..3 will be advertised as schedulable
 # `amd.com/gpu` or `nvidia.com/gpu` resources.
 #
+# GPU vendor (nvidia / amd / none) is auto-detected per host via `lspci`
+# during bootstrap; it is not configured here.
+#
 # `max_pods` (optional) caps how many pods (sandboxes) can run on the node.
 # Omit to default to the host's CPU count (1 sandbox per core).
 

@@ -30,6 +30,7 @@ done
 TOOLS=(
   "tailscale|tailscale|cask|-|https://tailscale.com/download"
   "kubectl|kubectl|formula|kubectl|https://kubernetes.io/docs/tasks/tools/#kubectl"
+  "helm|helm|formula|-|https://helm.sh/docs/intro/install/"
   "gh|gh|formula|gh|https://cli.github.com/"
 )
 

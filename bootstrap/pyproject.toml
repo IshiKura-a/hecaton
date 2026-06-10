@@ -1,0 +1,14 @@
+[project]
+name = "hecaton-bootstrap"
+version = "0.0.0"
+description = "Bootstrap-time helpers and phase scripts for the hecaton fleet."
+requires-python = ">=3.10"
+dependencies = [
+  # All bootstrap phases parse hosts.yaml / monitoring versions.
+  "pyyaml>=6.0",
+  # phase 24-apply-sandboxes pulls sandbox image lists from HF datasets.
+  "huggingface_hub>=0.24",
+]
+
+[tool.uv]
+package = false

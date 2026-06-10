@@ -46,3 +46,17 @@ require_var() {
   local name="$1"
   [[ -n "${!name:-}" ]] || die "required env var is unset or empty: $name"
 }
+
+# ---- python (uv-managed) --------------------------------------------------
+#
+# bootstrap_uv
+#   Ensure the workspace .venv is in sync with the root pyproject.toml
+#   + uv.lock, then print the path to its python interpreter on stdout.
+#
+#   py="$(bootstrap_uv)"
+#   exec "$py" some-script.py
+bootstrap_uv() {
+  require_cmd uv
+  ( cd "$HECATON_ROOT" && uv sync --quiet )
+  printf '%s\n' "$HECATON_ROOT/.venv/bin/python"
+}

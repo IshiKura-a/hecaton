@@ -147,7 +147,7 @@ step_scaffold() {
     return 0
   fi
   log "scaffold: staging to fleet (hash ${cur:0:12})"
-  bash "$HECATON_ROOT/bootstrap/cluster/27-stage-agent-tools.sh"
+  bash "$HECATON_ROOT/bootstrap/cluster/26-stage-agent-tools.sh"
   echo "$cur" > "$stamp"
 }
 
@@ -177,7 +177,7 @@ step_broker() {
     _kubectl -n hecaton-system set image deploy/hecaton-broker broker="$tag"
     _kubectl -n hecaton-system rollout status deploy/hecaton-broker --timeout=120s
   else
-    log "broker: no Deployment yet — run bash bootstrap/cluster/26-install-broker.sh"
+    log "broker: no Deployment yet — run bash bootstrap/cluster/28-install-broker.sh"
     log "  (set BROKER_IMAGE=$tag in .env first, or pass it inline)"
   fi
 }

@@ -13,6 +13,7 @@ Verifies:
 """
 
 import os
+import time
 
 from hecaton_envs import SandboxProvider
 from r2egym.agenthub.action.action import Action
@@ -54,6 +55,10 @@ print(f"--- file_editor view /tmp/probe.py (exit={result.exit_code}) ---")
 print(result.stdout)
 if result.stderr:
     print(f"stderr: {result.stderr}")
+
+# Hold so Grafana panels have something to render for one scrape cycle.
+print("holding sandbox for 60s")
+time.sleep(60)
 
 provider.release(sb)
 print("released")

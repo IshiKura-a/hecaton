@@ -6,7 +6,7 @@
 #
 # On success, writes two files to config/ (both gitignored):
 #   - kubeconfig          kubectl access, server URL rewritten to tailnet IP
-#   - k3s-node-token      consumed by 21-install-k3s-agent.sh
+#   - k3s-node-token      join token for k3s agents
 
 set -euo pipefail
 
