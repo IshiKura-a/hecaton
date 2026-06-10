@@ -1,4 +1,4 @@
-# hecaton
+# Hecaton
 
 > *Hecatoncheires (Ἑκατόγχειρες) — the hundred-handed giants of Greek myth, who hurled a hundred boulders at the Titans in a single throw.*
 
@@ -12,16 +12,17 @@ hecaton/
 │   ├── install.sh
 │   ├── network/  Tailscale on every host.
 │   └── cluster/  k3s server/agents, device plugins, agent-sandbox,
-│                 sandboxes, subnet router, broker.
+│                 sandboxes, subnet router, scaffolds, monitoring, broker.
 ├── platform/
-│   ├── broker/   FastAPI service trainers talk to (build + Deployment).
-│   └── network/  In-cluster Tailscale subnet router manifest.
+│   ├── broker/      FastAPI service trainers talk to (build + Deployment).
+│   ├── monitoring/  Helm values + Grafana dashboards + GPU exporters.
+│   └── network/     In-cluster Tailscale subnet router manifest.
 ├── envs/         Python trainer SDK (`hecaton-envs`) + container entrypoint.
 ├── scaffolds/    Agent tool sets (R2E-Gym, ...) staged into sandbox pods.
 ├── scripts/      Laptop preflight + trainer-host setup.
 ├── examples/     End-to-end demos (`trainer-smoke/run_bare.py` and
 │                 `trainer-smoke/run_r2egym.py`).
-├── ops/          Day-2 (remove-host etc.).
+├── ops/          Day-2 (remove-host, maintenance-host etc.).
 ├── lib/          Shared shell helpers + pinned versions of upstream pieces.
 └── config/       Real config (gitignored) + examples/ (committed templates).
 ```
@@ -69,13 +70,22 @@ Optional: drop one yaml per sandbox type into `config/sandboxes/` (or bulk-regis
 bash bootstrap/install.sh
 ```
 
-That covers everything in order — Tailscale, k3s server, k3s agents, GPU plugins, agent-sandbox controller, sandboxes, subnet router, scaffold tools staging, broker image build + deploy. Every phase is idempotent, so re-running after any fix is safe.
+That covers everything in order — Tailscale, k3s server, k3s agents, GPU plugins, agent-sandbox controller, sandboxes, subnet router, scaffold tools staging, monitoring stack, broker image build + deploy. Every phase is idempotent, so re-running after any fix is safe.
 
 When it's done:
 
 ```bash
 KUBECONFIG=config/kubeconfig kubectl get nodes -o wide
 ```
+
+Grafana is at <http://`<server-tailnet-ip>`:30080> (admin / admin). Four dashboards ship pre-loaded under the `hecaton` tag:
+
+- **Hecaton — Capacity** — GPU headroom, fleet density, node capacity table
+- **Hecaton — Acquire Health** — latency p50/p95/p99, acquire rate, failure breakdown
+- **Hecaton — Sandbox Lifecycle** — pod phases, restart counts, agent-sandbox controller health
+- **Hecaton — Nodes** — CPU, memory, disk, network, GPU utilization per node
+
+Only the k3s server node binds the port; phase 27 prints the resolved URL when it finishes.
 
 ### 3. Connect a trainer
 
@@ -144,7 +154,7 @@ A *scaffold* is a named bundle of agent tools (R2E-Gym's `file_editor`, `execute
 ### How the pieces fit
 
 - **Source of truth**: `scaffolds/<scaffold>/` in this repo — one directory per scaffold. `scaffolds/r2egym/` ships out of the box; add your own by dropping a new directory in.
-- **Staged on every host**: [`bootstrap/cluster/27-stage-agent-tools.sh`](bootstrap/cluster/27-stage-agent-tools.sh) syncs `scaffolds/` to `/opt/hecaton/agent-tools/<scaffold>/` on every fleet host. While staging it also rewrites every `*.py` shebang to `#!/usr/bin/env python3` so tools resolve their interpreter through the sandbox image's PATH rather than a hard-coded path. Files end up mode `0555` (r-x, no write). The phase always re-stages; it refuses to run while any Sandbox CR exists, since replacing files under a live sandbox would silently swap its mounted tools.
+- **Staged on every host**: [`bootstrap/cluster/26-stage-agent-tools.sh`](bootstrap/cluster/26-stage-agent-tools.sh) syncs `scaffolds/` to `/opt/hecaton/agent-tools/<scaffold>/` on every fleet host. While staging it also rewrites every `*.py` shebang to `#!/usr/bin/env python3` so tools resolve their interpreter through the sandbox image's PATH rather than a hard-coded path. Files end up mode `0555` (r-x, no write). The phase always re-stages; it refuses to run while any Sandbox CR exists, since replacing files under a live sandbox would silently swap its mounted tools.
 - **Mounted at acquire time**: the broker, when `acquire(scaffold="<name>")` is called, appends a hostPath volume to the pod spec and mounts it readOnly at `/opt/agent-tools` in every container. The broker does **not** touch the image's PATH — tools are invoked by absolute path.
 - **Python deps installed at acquire time**: if the scaffold dir contains a `requirements.txt`, the SDK runs `pip install -r /opt/agent-tools/requirements.txt` against the pod before returning the handle. Scaffold deps stay with the scaffold; sandbox images don't have to bake them in.
 - **Invoked via an adapter**: trainer code calls `sb.invoke(action)`, which dispatches through a `ScaffoldAdapter`. The adapter renders the action to an absolute-path command (e.g. `/opt/agent-tools/file_editor view --path ...`) and parses the response back into a scaffold-native observation. The built-in `R2EGymAdapter` accepts any object with a `to_bashcmd()` method (an r2egym `Action` qualifies; trainers install r2egym themselves). Adding a scaffold = drop tools under `scaffolds/<name>/` + register a `ScaffoldAdapter` under that name (see `hecaton_envs.scaffolds`).
@@ -166,7 +176,27 @@ Change the files under `scaffolds/<scaffold>/` (or add a patch under `scaffolds/
 bash bootstrap/install.sh
 ```
 
-Phase 27 will refuse to re-stage while any sandbox is alive (it would silently swap tools mid-rollout, since hostPath is a bind mount). Release everything first — `provider.revoke(...)` on each trainer, or `kubectl delete sandbox -n hecaton-sandboxes --all` for ops — then re-run.
+Phase 26 will refuse to re-stage while any sandbox is alive (it would silently swap tools mid-rollout, since hostPath is a bind mount). Release everything first — `provider.revoke(...)` on each trainer, or `kubectl delete sandbox -n hecaton-sandboxes --all` for ops — then re-run.
+
+## Monitoring
+
+[`bootstrap/cluster/27-install-monitoring.sh`](bootstrap/cluster/27-install-monitoring.sh) installs the [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) helm chart (Prometheus + Grafana + node-exporter + kube-state-metrics) plus per-vendor GPU exporters — GPU vendor is autodetected per host via `lspci` (cached under `.cache/gpu-vendor/`), so `dcgm-exporter` lands on NVIDIA nodes and `amd-smi-exporter` on AMD nodes, automatically. Pinned versions live in [lib/monitoring-version.sh](lib/monitoring-version.sh).
+
+Open Grafana at <http://`<server-tailnet-ip>`:30080> (admin / admin) — phase 27 prints the resolved URL on completion. Five dashboards ship with the repo at [platform/monitoring/dashboards/](platform/monitoring/dashboards/) and auto-load into Grafana via a labelled ConfigMap: **Hecaton Overview** (single-screen health summary with cross-links), **Hecaton — Capacity** (GPU headroom and fleet density), **Hecaton — Acquire Health** (latency/failure signals, filterable by `$template`), **Hecaton — Sandbox Lifecycle** (pod-level debugging), and **Hecaton — Nodes** (per-node resource telemetry, filterable by `$node`).
+
+Metrics emitted by the broker (Prometheus format, scraped automatically):
+
+| Metric | Description |
+| --- | --- |
+| `hecaton_sandboxes{template, run_id, node, scaffold}` | Currently held sandboxes |
+| `hecaton_sandbox_age_seconds{id, template, run_id, node}` | Seconds since each sandbox was acquired |
+| `hecaton_acquires_total{template, scaffold, node}` | Cumulative acquires |
+| `hecaton_releases_total{template, reason}` | Cumulative releases (reason: `trainer` / `revoke` / `reaper`) |
+| `hecaton_acquire_failures_total{template, reason}` | Acquires that failed (e.g. pod never reached Ready) |
+| `hecaton_acquire_latency_seconds{template}` | Histogram of acquire wall-clock time (cold-start included) |
+| `hecaton_trainers` | Currently registered trainers |
+
+To edit the dashboard: change it interactively in Grafana, then **Dashboard settings → JSON Model → copy → overwrite [platform/monitoring/dashboards/hecaton-overview.json](platform/monitoring/dashboards/hecaton-overview.json) → commit**. Re-running phase 27 hot-loads the change.
 
 ## Testing & deploying changes
 
@@ -174,9 +204,11 @@ Three commands, one per scope:
 
 | Scope | Command | What it does |
 | --- | --- | --- |
-| First-time install of a fresh fleet | `bash bootstrap/install.sh` | Tailscale → k3s → device plugins → agent-sandbox → sandboxes → subnet router → scaffolds → broker. Idempotent; re-run after any fix. |
+| First-time install of a fresh fleet | `bash bootstrap/install.sh` | Tailscale → k3s → device plugins → agent-sandbox → sandboxes → subnet router → scaffolds → monitoring → broker. Idempotent; re-run after any fix. |
 | Iterate on your laptop → dev fleet | `make dev [host=<alias>]` | Hash-gated: only rebuilds & redeploys what actually changed. With `host=`, also runs a smoke script on that trainer. |
 | Promote a dev change to production | `make release` | Refuses dirty tree, `git push` HEAD on main, waits for `broker-image.yml` CI to publish `ghcr.io/.../hecaton-broker:sha-<sha>`, pins `.env`, runs `bootstrap/install.sh` so broker + sandboxes + scaffolds all converge to HEAD. |
+| Node maintenance (graceful) | `bash ops/maintenance-host.sh start <name>` | Cordon + wait for sandboxes to drain naturally. `--force` to kill immediately. `stop` to uncordon. |
+| Remove a node permanently | `bash ops/remove-host.sh <name>` | Cordon + drain + delete node + uninstall k3s + remove from tailnet. |
 
 ### `make dev` in detail
 
@@ -191,7 +223,7 @@ make dev host=<alias> smoke=run_<other>.py   # pick a different smoke script
 
 | Phase | Triggers when… | Action |
 | --- | --- | --- |
-| scaffold | `scaffolds/` content hash differs from last stage | wraps `bootstrap/cluster/27-stage-agent-tools.sh` |
+| scaffold | `scaffolds/` content hash differs from last stage | wraps `bootstrap/cluster/26-stage-agent-tools.sh` |
 | broker | `platform/broker/` content hash ≠ the image tag the cluster is running | build + import + `kubectl set image` to `hecaton-broker:dev-<hash>` |
 | trainer-image | trainer Dockerfile or entrypoint hash changed (and `host=` set) | rsync repo to host, `docker build` in `HECATON_SOURCE=mount` mode |
 | smoke | `host=` set | `docker run` the trainer image with the repo bind-mounted as the host user; `trainer-entrypoint.sh` `pip install --user`s the mounted SDK so SDK / smoke script changes never need a rebuild |
@@ -211,7 +243,7 @@ git push origin main                                     # triggers .github/work
 bash bootstrap/install.sh
 ```
 
-If any Sandbox CR is alive in the cluster, phase 27 (scaffold staging) refuses to re-stage rather than swap mounts mid-rollout. Release sandboxes first (`kubectl delete sandbox -n hecaton-sandboxes --all`) and re-run.
+If any Sandbox CR is alive in the cluster, phase 26 (scaffold staging) refuses to re-stage rather than swap mounts mid-rollout. Release sandboxes first (`kubectl delete sandbox -n hecaton-sandboxes --all`) and re-run.
 
 ## Conventions
 

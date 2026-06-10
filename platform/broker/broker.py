@@ -21,9 +21,9 @@ runs in the cluster pod network; trainers reach it through a Tailscale
 subnet route that advertises the pod CIDR.
 
 If the acquire request names a scaffold, the broker also appends a
-hostPath volume (`/opt/hecaton/agent-tools/<scaffold>/`, staged by
-phase 27) and a readOnly mount at `/opt/agent-tools` to every container
-in the pod spec before creating the CR — SandboxTemplate YAML stays
+hostPath volume at `/opt/hecaton/agent-tools/<scaffold>/` and a
+readOnly mount at `/opt/agent-tools` to every container in the pod
+spec before creating the CR — SandboxTemplate YAML stays
 scaffold-agnostic.
 
 Lifecycle: a background reaper releases sandboxes idle for more than
@@ -52,9 +52,19 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from kubernetes import client, config
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+)
+from prometheus_client.core import GaugeMetricFamily
 
 # --- configuration ----------------------------------------------------------
 
@@ -83,24 +93,24 @@ LABEL_RUN_ID = "hecaton.io/run-id"
 LABEL_TEMPLATE = "hecaton.io/template"
 LABEL_SCAFFOLD = "hecaton.io/scaffold"
 
-# Marker that bootstrap/cluster/24-apply-sandboxes.py stamps on every
-# SandboxTemplate it renders from config/sandboxes/. The broker refuses
-# to acquire any template that isn't carrying it, so something dropped
-# into the cluster out-of-band (`kubectl apply` by hand, leftover from
-# an earlier deploy, ...) cannot be acquired by trainers.
+# Marker the sandbox renderer stamps on every managed SandboxTemplate.
+# The broker refuses to acquire any template not carrying it, so
+# anything dropped into the cluster out-of-band (`kubectl apply` by
+# hand, leftover from an earlier deploy, ...) cannot be acquired by
+# trainers.
 LABEL_MANAGED_BY = "hecaton.io/managed-by"
 MANAGED_VALUE = "hecaton"
 
-# Scaffold tools (R2E-Gym etc.) are staged by phase 27 on every host
-# at SCAFFOLD_HOST_BASE/<scaffold>/, mode 0555. When a trainer asks for
+# Scaffold tools (R2E-Gym etc.) are staged on every host at
+# SCAFFOLD_HOST_BASE/<scaffold>/, mode 0555. When a trainer asks for
 # a scaffold at acquire time we layer a hostPath mount onto the pod
 # spec so the tools land read+execute-only at SCAFFOLD_MOUNT, and we
 # prepend that directory to PATH so the scaffold can invoke tools by
 # bare name. The SandboxTemplate itself stays scaffold-agnostic.
 SCAFFOLD_HOST_BASE = "/opt/hecaton/agent-tools"
 SCAFFOLD_MOUNT = "/opt/agent-tools"
-# Lowercase DNS-ish label: matches phase 27's directory convention and
-# blocks path traversal (no '/', no '..', no leading dot).
+# Lowercase DNS-ish label matching the scaffold staging directory
+# convention; also blocks path traversal (no '/', no '..', no leading dot).
 _SCAFFOLD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
@@ -112,7 +122,9 @@ class SandboxState:
     host: str
     port: int
     node: str
-    last_active: float
+    last_active: float    # time.monotonic, for the idle reaper
+    acquired_at: float    # time.time (wall-clock), for sandbox-age metrics
+    scaffold: str = ""
 
 
 _state_lock = threading.Lock()
@@ -130,6 +142,88 @@ _trainer_lock = threading.Lock()
 _trainers: dict[str, TrainerState] = {}  # run_id → TrainerState
 
 
+# --- prometheus metrics -----------------------------------------------------
+#
+# Counters/histograms accumulate in the standard way. Gauges that
+# reflect live state (sandboxes, age, trainers) are produced by a
+# custom Collector — its collect() is called once per scrape and
+# returns a fresh snapshot, so there is no clear()/rebuild race.
+
+_METRICS = CollectorRegistry()
+
+_M_ACQUIRES = Counter(
+    "hecaton_acquires_total",
+    "Sandbox acquire requests handled by the broker.",
+    ["template", "scaffold", "node"],
+    registry=_METRICS,
+)
+_M_RELEASES = Counter(
+    "hecaton_releases_total",
+    "Sandbox release events.",
+    ["template", "reason"],  # reason: trainer | reaper | revoke
+    registry=_METRICS,
+)
+_M_ACQUIRE_FAILS = Counter(
+    "hecaton_acquire_failures_total",
+    "Acquire requests that failed before returning a handle.",
+    ["template", "reason"],  # reason: not_ready | invalid_scaffold | template_not_found | ...
+    registry=_METRICS,
+)
+_M_ACQUIRE_LATENCY = Histogram(
+    "hecaton_acquire_latency_seconds",
+    "Wall-clock seconds from /sandboxes request entry to successful return.",
+    ["template"],
+    # Tuned for sandbox-pod cold-start: image pull dominates, typical
+    # range is 5s (cached) to 3min (timeout). SANDBOX_READY_TIMEOUT_S
+    # caps the max at 180s, so no bucket above that is reachable.
+    buckets=(0.5, 1, 2, 5, 10, 20, 30, 60, 120, 180),
+    registry=_METRICS,
+)
+
+
+class _StateCollector:
+    """Produces gauge metrics from live broker state on each scrape."""
+
+    def collect(self):  # noqa: ANN201
+        now_wall = time.time()
+
+        sandboxes_gauge = GaugeMetricFamily(
+            "hecaton_sandboxes",
+            "Currently held sandboxes.",
+            labels=["template", "run_id", "node", "scaffold"],
+        )
+        age_gauge = GaugeMetricFamily(
+            "hecaton_sandbox_age_seconds",
+            "Seconds since this sandbox was acquired.",
+            labels=["id", "template", "run_id", "node"],
+        )
+
+        with _state_lock:
+            snapshot = list(_sandboxes.values())
+        for sb in snapshot:
+            sandboxes_gauge.add_metric(
+                [sb.template, sb.run_id, sb.node, sb.scaffold or "none"], 1,
+            )
+            age_gauge.add_metric(
+                [sb.id, sb.template, sb.run_id, sb.node],
+                now_wall - sb.acquired_at,
+            )
+
+        trainers_gauge = GaugeMetricFamily(
+            "hecaton_trainers",
+            "Trainers currently registered with the broker.",
+        )
+        with _trainer_lock:
+            trainers_gauge.add_metric([], len(_trainers))
+
+        yield sandboxes_gauge
+        yield age_gauge
+        yield trainers_gauge
+
+
+_METRICS.register(_StateCollector())
+
+
 # --- kubernetes plumbing ----------------------------------------------------
 
 try:
@@ -144,9 +238,9 @@ _custom = client.CustomObjectsApi()
 def _load_template(name: str) -> dict:
     """Fetch a SandboxTemplate and return its `spec.podTemplate.spec`.
 
-    Refuses templates that aren't carrying the hecaton.io/managed-by
-    label — declaring sandboxes goes through config/sandboxes/ +
-    phase 24, not ad-hoc kubectl apply.
+    Refuses templates without the hecaton.io/managed-by label — the
+    sandbox renderer is the only sanctioned source of acquireable
+    templates.
     """
     try:
         tmpl = _custom.get_namespaced_custom_object(
@@ -184,14 +278,12 @@ def _inject_scaffold(pod_spec: dict, scaffold: str) -> None:
     """Layer a scaffold's tools onto `pod_spec` in place.
 
     Adds a hostPath volume pointing at SCAFFOLD_HOST_BASE/<scaffold>/
-    (staged by phase 27, mode 0555) and mounts it readOnly at
-    SCAFFOLD_MOUNT in every container. The SandboxTemplate stays
-    scaffold-agnostic — selection happens here, in the trainer-facing
-    acquire path.
+    (mode 0555) and mounts it readOnly at SCAFFOLD_MOUNT in every
+    container. The SandboxTemplate stays scaffold-agnostic — selection
+    happens here, in the trainer-facing acquire path.
 
-    Tools are invoked by absolute path (the SDK's ScaffoldAdapter
-    handles that), so we deliberately don't touch PATH — the sandbox
-    image's own PATH stays intact.
+    Tools are invoked by absolute path, so we deliberately don't touch
+    PATH — the sandbox image's own PATH stays intact.
 
     The caller must have validated `scaffold` against `_SCAFFOLD_RE`
     before getting here: the value is interpolated into a hostPath.
@@ -322,46 +414,72 @@ async def acquire(req: Request, _: None = Depends(_check_auth)) -> dict:
     run_id = body["run_id"]
     template = body["template"]
     scaffold = body.get("scaffold") or ""
-    if scaffold and not _SCAFFOLD_RE.match(scaffold):
-        # Reject anything that could escape SCAFFOLD_HOST_BASE/<scaffold>
-        # or land outside our staging convention. This is the only
-        # input we splice into a hostPath, so validate strictly.
-        raise HTTPException(400, detail=f"invalid scaffold name: {scaffold!r}")
 
-    pod_spec = _load_template(template)
-    port = _first_container_port(pod_spec)
-    if scaffold:
-        _inject_scaffold(pod_spec, scaffold)
-
-    name = f"sb-{secrets.token_hex(6)}"
-    _create_sandbox_cr(name, run_id, template, pod_spec, scaffold=scaffold)
-
+    started = time.monotonic()
     try:
-        host, node = _wait_ready_pod_ip(name)
+        if scaffold and not _SCAFFOLD_RE.match(scaffold):
+            # Reject anything that could escape SCAFFOLD_HOST_BASE/<scaffold>
+            # or land outside our staging convention. This is the only
+            # input we splice into a hostPath, so validate strictly.
+            _M_ACQUIRE_FAILS.labels(template=template, reason="invalid_scaffold").inc()
+            raise HTTPException(400, detail=f"invalid scaffold name: {scaffold!r}")
+
+        try:
+            pod_spec = _load_template(template)
+        except HTTPException as e:
+            reason = "template_not_found" if e.status_code == 404 else "template_invalid"
+            _M_ACQUIRE_FAILS.labels(template=template, reason=reason).inc()
+            raise
+        port = _first_container_port(pod_spec)
+        if scaffold:
+            _inject_scaffold(pod_spec, scaffold)
+
+        name = f"sb-{secrets.token_hex(6)}"
+        _create_sandbox_cr(name, run_id, template, pod_spec, scaffold=scaffold)
+
+        try:
+            host, node = _wait_ready_pod_ip(name)
+        except HTTPException:
+            _delete_sandbox_cr(name)
+            _M_ACQUIRE_FAILS.labels(template=template, reason="not_ready").inc()
+            raise
+
+        now = time.monotonic()
+        state = SandboxState(
+            id=name, run_id=run_id, template=template,
+            host=host, port=port, node=node,
+            last_active=now, acquired_at=time.time(),
+            scaffold=scaffold,
+        )
+        with _state_lock:
+            _sandboxes[name] = state
+        with _trainer_lock:
+            tr = _trainers.get(run_id)
+            if tr:
+                tr.last_active = now
+
+        _M_ACQUIRES.labels(
+            template=template,
+            scaffold=scaffold or "none",
+            node=node or "unknown",
+        ).inc()
+        _M_ACQUIRE_LATENCY.labels(template=template).observe(time.monotonic() - started)
+
+        return {"id": name, "run_id": run_id, "template": template,
+                "scaffold": scaffold,
+                "host": host, "port": port, "node": node}
     except HTTPException:
-        _delete_sandbox_cr(name)
         raise
-
-    now = time.monotonic()
-    state = SandboxState(
-        id=name, run_id=run_id, template=template,
-        host=host, port=port, node=node, last_active=now,
-    )
-    with _state_lock:
-        _sandboxes[name] = state
-    with _trainer_lock:
-        tr = _trainers.get(run_id)
-        if tr:
-            tr.last_active = now
-
-    return {"id": name, "run_id": run_id, "template": template,
-            "scaffold": scaffold,
-            "host": host, "port": port, "node": node}
+    except Exception:
+        # Anything we didn't explicitly classify still counts as a
+        # failure — surface it as "internal" so dashboards alert.
+        _M_ACQUIRE_FAILS.labels(template=template, reason="internal").inc()
+        raise
 
 
 @app.delete("/sandboxes/{sandbox_id}", status_code=204)
 def release(sandbox_id: str, _: None = Depends(_check_auth)) -> None:
-    _release_one(sandbox_id)
+    _release_one(sandbox_id, reason="trainer")
 
 
 @app.post("/revoke")
@@ -369,14 +487,37 @@ def revoke(body: dict, _: None = Depends(_check_auth)) -> dict:
     run_id = body["run_id"]
     items = _list_sandbox_crs(run_id=run_id)
     for it in items:
-        _release_one(it["metadata"]["name"])
+        _release_one(it["metadata"]["name"], reason="revoke")
     return {"released": len(items)}
 
 
-def _release_one(sandbox_id: str) -> None:
-    _delete_sandbox_cr(sandbox_id)
+def _release_one(sandbox_id: str, *, reason: str) -> None:
     with _state_lock:
-        _sandboxes.pop(sandbox_id, None)
+        st = _sandboxes.pop(sandbox_id, None)
+    try:
+        _delete_sandbox_cr(sandbox_id)
+    except client.exceptions.ApiException as exc:
+        if exc.status != 404:
+            raise
+    template = st.template if st else "unknown"
+    _M_RELEASES.labels(template=template, reason=reason).inc()
+
+
+# --- prometheus scrape endpoint ---------------------------------------------
+#
+# Not bearer-gated: the broker is only reachable on the tailnet (ACL
+# pins reachability to tag:trainer and tag:fleet-ops), and Prometheus
+# inside the cluster is just another tailnet-equivalent peer here.
+
+
+@app.get("/metrics")
+def prometheus_metrics() -> PlainTextResponse:
+    # _StateCollector.collect() produces the gauge snapshot on demand;
+    # counters/histograms are accumulated in the standard way.
+    return PlainTextResponse(
+        generate_latest(_METRICS).decode(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 # --- idle reaper ------------------------------------------------------------
@@ -406,7 +547,6 @@ async def _reaper() -> None:
         await asyncio.sleep(60)
         now = time.monotonic()
 
-        # --- sandbox idle reap (2h) ---
         stale_sandboxes: list[str] = []
         with _state_lock:
             for sid, st in _sandboxes.items():
@@ -414,12 +554,11 @@ async def _reaper() -> None:
                     stale_sandboxes.append(sid)
         for sid in stale_sandboxes:
             try:
-                _release_one(sid)
+                _release_one(sid, reason="reaper")
                 print(f"reaper: released idle sandbox {sid}", flush=True)
             except Exception as e:
                 print(f"reaper: failed to release {sid}: {e}", flush=True)
 
-        # --- trainer idle reap (6h) ---
         stale_trainers: list[str] = []
         with _trainer_lock:
             for run_id, tr in _trainers.items():
@@ -427,11 +566,9 @@ async def _reaper() -> None:
                     stale_trainers.append(run_id)
         for run_id in stale_trainers:
             try:
-                # Release all sandboxes for this trainer
                 items = _list_sandbox_crs(run_id=run_id)
                 for it in items:
-                    _release_one(it["metadata"]["name"])
-                # Kick from tailnet
+                    _release_one(it["metadata"]["name"], reason="reaper")
                 with _trainer_lock:
                     tr = _trainers.pop(run_id, None)
                 if tr:
@@ -507,10 +644,25 @@ def _rehydrate_from_cluster() -> None:
             continue
         node = pod.spec.node_name or ""
 
+        # k8s sets creationTimestamp on every CR (RFC3339 UTC). Use
+        # it as the acquire wall-clock so sandbox-age metrics survive
+        # broker restarts.
+        acquired_at = datetime.fromisoformat(meta["creationTimestamp"]).timestamp()
+
         with _state_lock:
             _sandboxes[name] = SandboxState(
                 id=name, run_id=run_id, template=template,
-                host=host, port=port, node=node, last_active=now,
+                host=host, port=port, node=node,
+                last_active=now, acquired_at=acquired_at,
+                scaffold=labels.get(LABEL_SCAFFOLD, ""),
+            )
+        with _trainer_lock:
+            # Adopt the owning trainer too so /metrics and the idle
+            # reaper see it. device_id is unknown here; the trainer's
+            # next /register call will fill it in.
+            _trainers.setdefault(
+                run_id,
+                TrainerState(run_id=run_id, device_id="", last_active=now),
             )
         adopted += 1
 

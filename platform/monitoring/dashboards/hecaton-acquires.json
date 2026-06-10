@@ -1,0 +1,388 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Acquires / 5m",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(hecaton_acquires_total{template=~\"$template\"}[5m]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Releases / 5m",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(hecaton_releases_total{template=~\"$template\"}[5m]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Failures / 5m",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Acquire requests that failed before returning a sandbox handle.",
+      "targets": [
+        {
+          "expr": "sum(increase(hecaton_acquire_failures_total{template=~\"$template\"}[5m]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Success rate (5m)",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "acquires / (acquires + failures), windowed 5m.",
+      "targets": [
+        {
+          "expr": "(sum(increase(hecaton_acquires_total{template=~\"$template\"}[5m])) > 0) / (sum(increase(hecaton_acquires_total{template=~\"$template\"}[5m])) + sum(increase(hecaton_acquire_failures_total{template=~\"$template\"}[5m])))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "N/A (idle)",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.9
+              },
+              {
+                "color": "green",
+                "value": 0.99
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Acquire latency (p50 / p95 / p99)",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Wall-clock seconds from /sandboxes request to ready pod. Pod cold-start dominates the upper tail.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, template) (rate(hecaton_acquire_latency_seconds_bucket{template=~\"$template\"}[5m])))",
+          "legendFormat": "p50 {{template}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, template) (rate(hecaton_acquire_latency_seconds_bucket{template=~\"$template\"}[5m])))",
+          "legendFormat": "p95 {{template}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, template) (rate(hecaton_acquire_latency_seconds_bucket{template=~\"$template\"}[5m])))",
+          "legendFormat": "p99 {{template}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Acquire / release rate (per minute)",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (template) (rate(hecaton_acquires_total{template=~\"$template\"}[5m])) * 60",
+          "legendFormat": "acquire {{template}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (template) (rate(hecaton_releases_total{template=~\"$template\"}[5m])) * 60",
+          "legendFormat": "release {{template}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failures by reason (per minute)",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Anything non-zero means trainers are seeing errors. Stacked by reason: not_ready, template_not_found, invalid_scaffold, internal.",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(hecaton_acquire_failures_total{template=~\"$template\"}[5m])) * 60",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Releases by reason (per minute)",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "trainer = explicit DELETE; reaper = idle eviction; revoke = run cleanup.",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(hecaton_releases_total{template=~\"$template\"}[5m])) * 60",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Top 10 oldest sandboxes",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "topk(10, hecaton_sandbox_age_seconds)",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "service": true,
+              "namespace": true,
+              "instance": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "tags": [
+    "hecaton"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "template",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(hecaton_acquires_total, template)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Hecaton \u2014 Acquire Health",
+  "uid": "hecaton-acquires",
+  "version": 1,
+  "links": [
+    {
+      "title": "Overview",
+      "url": "/d/hecaton-overview",
+      "type": "link"
+    },
+    {
+      "title": "Capacity",
+      "url": "/d/hecaton-capacity",
+      "type": "link"
+    },
+    {
+      "title": "Lifecycle",
+      "url": "/d/hecaton-lifecycle",
+      "type": "link"
+    },
+    {
+      "title": "Nodes",
+      "url": "/d/hecaton-nodes",
+      "type": "link"
+    }
+  ]
+}

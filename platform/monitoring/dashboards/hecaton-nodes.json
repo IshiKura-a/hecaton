@@ -1,0 +1,228 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Node CPU usage (cores)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance) (rate(node_cpu_seconds_total{mode!=\"idle\"}[5m])) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
+          "legendFormat": "{{nodename}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Node memory used (bytes)",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
+          "legendFormat": "{{nodename}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU utilization (NVIDIA / AMD)",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "No data here means the GPU exporter DaemonSet isn't running. See phase 27 (monitoring-exporters).",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_GPU_UTIL * on(pod) group_left(node) kube_pod_info{namespace=\"monitoring\"}",
+          "legendFormat": "{{node}} gpu{{gpu}}",
+          "refId": "A"
+        },
+        {
+          "expr": "amd_gpu_busy_percent",
+          "legendFormat": "{{instance}} amd gpu{{gpu_id}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node disk usage (rootfs %)",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Sandbox writes (scratch, model checkpoints) land on the node. Watch this.",
+      "targets": [
+        {
+          "expr": "(100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"})) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
+          "legendFormat": "{{nodename}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node network throughput (bytes/s)",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Physical interfaces only \u2014 excludes loopback, veth, docker, cni, flannel, tailscale, bridge.",
+      "targets": [
+        {
+          "expr": "sum by (instance) (rate(node_network_receive_bytes_total{device!~\"lo|veth.*|docker.*|cni.*|flannel.*|tailscale.*|br-.*\"}[5m])) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
+          "legendFormat": "{{nodename}} rx",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (instance) (rate(node_network_transmit_bytes_total{device!~\"lo|veth.*|docker.*|cni.*|flannel.*|tailscale.*|br-.*\"}[5m])) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
+          "legendFormat": "{{nodename}} tx",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU memory used (NVIDIA)",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_FB_USED * 1024 * 1024 * on(pod) group_left(node) kube_pod_info{namespace=\"monitoring\"}",
+          "legendFormat": "{{node}} gpu{{gpu}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "hecaton"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(node_uname_info, nodename)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Hecaton \u2014 Nodes",
+  "uid": "hecaton-nodes",
+  "version": 1,
+  "links": [
+    {
+      "title": "Overview",
+      "url": "/d/hecaton-overview",
+      "type": "link"
+    },
+    {
+      "title": "Acquire Health",
+      "url": "/d/hecaton-acquires",
+      "type": "link"
+    },
+    {
+      "title": "Capacity",
+      "url": "/d/hecaton-capacity",
+      "type": "link"
+    },
+    {
+      "title": "Lifecycle",
+      "url": "/d/hecaton-lifecycle",
+      "type": "link"
+    }
+  ]
+}

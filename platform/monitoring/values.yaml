@@ -1,0 +1,62 @@
+# helm values for kube-prometheus-stack.
+#
+# Design choices:
+# - Alertmanager off: noisy, no on-call rotation yet, can re-enable
+#   once we have one.
+# - Grafana exposed via NodePort 30080 (same pattern as broker on
+#   30443), reachable on the tailnet to any operator with tag:fleet-ops.
+# - Admin/admin default password — the broker NodePort already uses
+#   tailnet ACL as its perimeter; same model here.
+# - emptyDir storage: dashboards are provisioned from a ConfigMap, so
+#   the only thing lost on a Grafana pod restart is per-user UI prefs.
+# - Extra scrape config: pull /metrics from the hecaton broker so
+#   broker-emitted metrics flow into the same Prometheus.
+
+alertmanager:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+    # Pick up our broker /metrics endpoint without a ServiceMonitor CR
+    # (the broker isn't in the charts list of "known" services).
+    additionalScrapeConfigs:
+      - job_name: hecaton-broker
+        scrape_interval: 15s
+        static_configs:
+          - targets:
+              - hecaton-broker.hecaton-system.svc:80
+
+grafana:
+  adminPassword: admin
+  defaultDashboardsTimezone: browser
+  # Pin to the k3s server node and set externalTrafficPolicy=Local so
+  # only the server's :30080 accepts traffic. kube-proxy on agent
+  # nodes still owns the port, but with no local endpoint it returns
+  # ECONNREFUSED — i.e. one URL, not N.
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: "true"
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  service:
+    type: NodePort
+    nodePort: 30080
+    externalTrafficPolicy: Local
+  persistence:
+    enabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folder: /tmp/dashboards
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true

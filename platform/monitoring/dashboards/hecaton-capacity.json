@@ -1,0 +1,411 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Sandboxes (now)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(hecaton_sandboxes{template=~\"$template\"}) or vector(0)",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "GPU headroom (free / total)",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Allocatable GPUs minus pod-requested. Pods that don't request GPU don't count against headroom.",
+      "targets": [
+        {
+          "expr": "sum(kube_node_status_allocatable{resource=\"nvidia_com_gpu\"}) - (sum(kube_pod_container_resource_requests{resource=\"nvidia_com_gpu\"}) or vector(0))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Registered trainers",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "hecaton_trainers",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Nodes (ready)",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU allocation (allocatable vs requested)",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "If 'requested' approaches 'allocatable' the fleet is saturated. 'requested' is 0 when no pods declare a GPU resource request.",
+      "targets": [
+        {
+          "expr": "sum(kube_node_status_allocatable{resource=\"nvidia_com_gpu\"})",
+          "legendFormat": "allocatable",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(kube_pod_container_resource_requests{resource=\"nvidia_com_gpu\"}) or vector(0)",
+          "legendFormat": "requested",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sandboxes by node (over time)",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node) (hecaton_sandboxes{template=~\"$template\"})",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "By node (now)",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node) (hecaton_sandboxes{template=~\"$template\"})",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no active sandbox"
+        }
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "By template (now)",
+      "gridPos": {
+        "x": 8,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (template) (hecaton_sandboxes{template=~\"$template\"})",
+          "legendFormat": "{{template}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no active sandbox"
+        }
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "By run (now)",
+      "gridPos": {
+        "x": 16,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (run_id) (hecaton_sandboxes{template=~\"$template\"})",
+          "legendFormat": "{{run_id}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no active sandbox"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Node GPU capacity",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Per-node allocatable vs requested GPUs.",
+      "targets": [
+        {
+          "expr": "sum by (node) (kube_node_status_allocatable{resource=\"nvidia_com_gpu\"})",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (node) (kube_pod_container_resource_requests{resource=\"nvidia_com_gpu\"}) or (sum by (node) (kube_node_status_allocatable{resource=\"nvidia_com_gpu\"}) * 0)",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "node",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true
+            },
+            "renameByName": {
+              "node": "Node",
+              "Value #A": "Allocatable",
+              "Value #B": "Requested"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "hecaton"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "template",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(hecaton_sandboxes, template)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(node_uname_info, nodename)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Hecaton \u2014 Capacity",
+  "uid": "hecaton-capacity",
+  "version": 1,
+  "links": [
+    {
+      "title": "Overview",
+      "url": "/d/hecaton-overview",
+      "type": "link"
+    },
+    {
+      "title": "Acquire Health",
+      "url": "/d/hecaton-acquires",
+      "type": "link"
+    },
+    {
+      "title": "Lifecycle",
+      "url": "/d/hecaton-lifecycle",
+      "type": "link"
+    },
+    {
+      "title": "Nodes",
+      "url": "/d/hecaton-nodes",
+      "type": "link"
+    }
+  ]
+}
