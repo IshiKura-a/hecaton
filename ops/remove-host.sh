@@ -38,7 +38,7 @@ ssh_host="$(inventory_field "$name" ssh_host)"
 # 1-3. Drain + delete the Node object (if it exists).
 export KUBECONFIG="$HECATON_ROOT/config/kubeconfig"
 if [[ -f "$KUBECONFIG" ]] && command -v kubectl >/dev/null; then
-  k8s_name="$(ssh_to "$name" 'hostname' | tr '[:upper:]' '[:lower:]')"
+  k8s_name="$(k8s_node_name_for "$name")"
   if kubectl get node "$k8s_name" >/dev/null 2>&1; then
     log "cordoning $k8s_name"
     kubectl cordon "$k8s_name"

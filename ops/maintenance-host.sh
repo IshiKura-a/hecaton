@@ -48,7 +48,7 @@ ssh_host="$(inventory_field "$name" ssh_host)"
 export KUBECONFIG="$HECATON_ROOT/config/kubeconfig"
 [[ -f "$KUBECONFIG" ]] || die "missing $KUBECONFIG"
 
-k8s_name="$(ssh_to "$name" 'hostname' | tr '[:upper:]' '[:lower:]')"
+k8s_name="$(k8s_node_name_for "$name")"
 kubectl get node "$k8s_name" >/dev/null 2>&1 || die "node '$k8s_name' not found in cluster"
 
 NAMESPACE="${HECATON_NAMESPACE:-hecaton-sandboxes}"

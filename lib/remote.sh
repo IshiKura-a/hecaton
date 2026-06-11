@@ -39,11 +39,12 @@ scp_to() {
       "$local_path" "$target:$remote_path"
 }
 
-# k8s node name = remote machine's hostname, lowercased. k3s registers
-# nodes under that, so anything that needs to address a node via
-# kubectl must translate inventory name -> k8s node name through here.
+# Kubernetes node name = remote machine's hostname, lowercased. Keep this
+# separate from the inventory name (hosts.yaml `name`) and SSH target
+# (hosts.yaml `ssh_host`). Anything that addresses a node through kubectl
+# should translate inventory name -> k8s node name through here.
 # Cached at $HECATON_ROOT/.cache/node-name/<host>; wipe to force re-probe.
-node_name_for() {
+k8s_node_name_for() {
   local host="$1"
   local cache="$HECATON_ROOT/.cache/node-name"
   mkdir -p "$cache"
@@ -56,6 +57,14 @@ node_name_for() {
   name="$(ssh_to "$host" 'hostname' | tr '[:upper:]' '[:lower:]')"
   echo "$name" > "$cached"
   echo "$name"
+}
+
+# Backwards-compatible alias. Prefer k8s_node_name_for in new code.
+node_name_for() { k8s_node_name_for "$@"; }
+
+os_nodename_for() {
+  local host="$1"
+  ssh_to "$host" 'uname -n'
 }
 
 # Run the same bash snippet (read from stdin) on each named host in
@@ -79,12 +88,15 @@ parallel_each_host() {
   local tmpdir
   tmpdir="$(mktemp -d -t hecaton-parallel.XXXX)"
 
-  local h pids=()
+  local h rc pids=()
   for h in "${hosts[@]}"; do
     {
+      set +e
       ssh_to "$h" "$env_prefix bash -s" <<< "$script" \
         >"$tmpdir/$h.out" 2>&1
-      echo $? > "$tmpdir/$h.rc"
+      rc=$?
+      set -e
+      echo "$rc" > "$tmpdir/$h.rc"
     } &
     pids+=($!)
   done

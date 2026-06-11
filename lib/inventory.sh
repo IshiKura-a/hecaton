@@ -7,6 +7,7 @@
 #       ssh_host: gpu-host-01    # alias in ~/.ssh/config
 #       role: server
 #       gpu_count: 4             # optional, caps GPUs exposed to k8s
+#       disk_root: /disk1        # optional, disk mount for sandbox/runtime data; default /
 #     - name: worker-1
 #       ...
 #
@@ -14,6 +15,7 @@
 #   inventory_path           - prints absolute path to hosts.yaml or dies
 #   inventory_hosts          - prints one host name per line
 #   inventory_field NAME KEY - prints the value of `key:` under host `name`
+#   inventory_disk_root NAME - prints disk_root, defaulting to /
 #
 # We avoid yq/python so bootstrap scripts have no Python prerequisite.
 
@@ -57,4 +59,18 @@ inventory_field() {
       exit
     }
   ' "$f"
+}
+
+inventory_disk_root() {
+  local host="$1" root
+  root="$(inventory_field "$host" disk_root 2>/dev/null || true)"
+  root="${root:-/}"
+  [[ "$root" == /* ]] || die "inventory: host '$host' disk_root must be an absolute path"
+  [[ "$root" != *[[:space:]]* ]] || die "inventory: host '$host' disk_root must not contain whitespace"
+  # Trim a trailing slash except for the root path itself. Keep the value
+  # simple: hosts.yaml should name a mount/path on the remote host.
+  if [[ "$root" != "/" ]]; then
+    root="${root%/}"
+  fi
+  printf '%s\n' "$root"
 }

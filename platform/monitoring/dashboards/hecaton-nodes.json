@@ -87,7 +87,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Node disk usage (rootfs %)",
+      "title": "Sandbox disk usage (%)",
       "gridPos": {
         "x": 0,
         "y": 16,
@@ -98,11 +98,11 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Sandbox writes (scratch, model checkpoints) land on the node. Watch this.",
+      "description": "Uses hosts.yaml disk_root per node; disk_root defaults to /. Phase 27 renders the per-node mountpoint query.",
       "targets": [
         {
           "expr": "(100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"})) * on(instance) group_left(nodename) node_uname_info{nodename=~\"$node\"}",
-          "legendFormat": "{{nodename}}",
+          "legendFormat": "{{nodename}} {{mountpoint}}",
           "refId": "A"
         }
       ],

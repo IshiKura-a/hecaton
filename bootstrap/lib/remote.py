@@ -3,7 +3,13 @@
 Authentication comes from the user's local OpenSSH setup
 (~/.ssh/config + ssh-agent); each Host.ssh_host is passed to ssh as-is.
 
-The .cache/node-name/<host> file is shared with lib/remote.sh.
+The .cache/node-name/<host> file is shared with lib/remote.sh and stores
+the Kubernetes node name. Keep these names distinct:
+
+* Host.name: hecaton's inventory name.
+* Host.ssh_host: the local OpenSSH target.
+* k8s_node_name/node_name: the Kubernetes node name.
+* os_nodename: the host's kernel nodename as exposed by node-exporter.
 """
 
 from __future__ import annotations
@@ -42,13 +48,52 @@ def _cache_dir(name: str) -> Path:
 
 
 def node_name(host: Host) -> str:
-    """k8s node name = remote `hostname` lowercased. Cached per host."""
+    """Kubernetes node name = remote `hostname` lowercased. Cached per host."""
     cache = _cache_dir("node-name") / host.name
     if cache.is_file():
         return cache.read_text().strip()
     n = ssh_capture(host, "hostname").strip().lower()
     cache.write_text(n + "\n")
     return n
+
+
+def k8s_node_name(host: Host) -> str:
+    """Explicit alias for node_name(), for call sites where the distinction matters."""
+    return node_name(host)
+
+
+def os_nodename(host: Host) -> str:
+    """Host kernel nodename as reported by node-exporter node_uname_info."""
+    cache = _cache_dir("os-nodename") / host.name
+    if cache.is_file():
+        return cache.read_text().strip()
+    n = ssh_capture(host, "uname -n").strip()
+    cache.write_text(n + "\n")
+    return n
+
+
+def tailnet_ip(host: Host) -> str:
+    """Host Tailscale IPv4 address. Not cached because it can change on rejoin."""
+    ip = ssh_capture(host, "tailscale ip -4 | head -1").strip()
+    if not ip:
+        die(f"{host.name}: could not read tailscale IPv4")
+    return ip
+
+
+def disk_mountpoint(host: Host) -> str:
+    """Resolve host.disk_root to the filesystem mountpoint on the remote host."""
+    disk_root = host.disk_root or "/"
+    quoted = sh_quote(disk_root)
+    cmd = f"findmnt -T {quoted} -n -o TARGET"
+    out = ssh_capture(host, cmd).strip()
+    if not out:
+        die(f"{host.name}: could not resolve disk_root={disk_root!r} to a mountpoint")
+    return out.splitlines()[0]
+
+
+def sh_quote(s: str) -> str:
+    """Single-quote a string for a small remote POSIX shell command."""
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 class Vendor(str, Enum):

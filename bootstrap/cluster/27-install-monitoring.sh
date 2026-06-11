@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Phase 27: install monitoring stack. Thin wrapper around the Python
-# implementation. Logic lives in 27-install-monitoring.py.
+# entrypoint. Implementation lives in bootstrap/lib/monitoring.py.
 
 set -euo pipefail
 

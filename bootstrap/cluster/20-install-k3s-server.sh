@@ -17,6 +17,7 @@ export HECATON_ROOT
 source "$HECATON_ROOT/lib/common.sh"
 source "$HECATON_ROOT/lib/inventory.sh"
 source "$HECATON_ROOT/lib/remote.sh"
+source "$HECATON_ROOT/lib/k3s.sh"
 source "$HECATON_ROOT/lib/k3s-version.sh"
 
 # Locate the single role:server host.
@@ -35,7 +36,8 @@ log "k3s $K3S_VERSION server target: $server"
 
 # Remote installer. Idempotent: if the running k3s already matches the
 # pinned version, do nothing. Otherwise install/upgrade.
-remote_script=$(cat <<'REMOTE'
+remote_script="$(k3s_remote_helpers)
+$(cat <<'REMOTE'
 set -euo pipefail
 WANT="$K3S_VERSION_REMOTE"
 
@@ -46,6 +48,8 @@ current=""
 if command -v k3s >/dev/null 2>&1; then
   current="$(k3s --version 2>/dev/null | head -1 | awk '{print $3}')"
 fi
+
+want_data_dir="$(k3s_requested_data_dir k3s "$current")"
 
 if [[ "$current" == "$WANT" ]] && [[ -z "${FORCE_REMOTE:-}" ]]; then
   echo "[remote] k3s $WANT already installed on $(hostname) (use --force to reconfigure)"
@@ -63,6 +67,7 @@ else
   #   --write-kubeconfig-mode=644 readable by non-root for `scp`/`cat`
   # Default max-pods to CPU count if not configured.
   max_pods="${MAX_PODS_REMOTE:-$(nproc)}"
+  data_dir_arg="$(k3s_data_dir_arg "$want_data_dir")"
 
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$WANT" \
@@ -73,6 +78,7 @@ else
       --disable=traefik \
       --disable=servicelb \
       --write-kubeconfig-mode=644 \
+      $data_dir_arg \
       --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml \
       --kubelet-arg=max-pods=$max_pods \
       --kubelet-arg=image-gc-high-threshold=85 \
@@ -92,7 +98,7 @@ done
 sudo k3s kubectl get --raw=/healthz >/dev/null 2>&1 \
   || { echo "k3s apiserver did not become healthy" >&2; exit 1; }
 REMOTE
-)
+)"
 
 # Upload scheduler config before install.
 log "uploading scheduler-config.yaml to $server"
@@ -100,7 +106,9 @@ scp_to "$server" "$HECATON_ROOT/config/scheduler-config.yaml" "/tmp/scheduler-co
 ssh_to "$server" "sudo mkdir -p /etc/rancher/k3s && sudo mv /tmp/scheduler-config.yaml /etc/rancher/k3s/scheduler-config.yaml"
 
 max_pods="$(inventory_field "$server" max_pods 2>/dev/null || true)"
-ssh_to "$server" "K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") MAX_PODS_REMOTE=$(printf '%q' "$max_pods") FORCE_REMOTE=$(printf '%q' "$force") bash -s" <<< "$remote_script"
+disk_root="$(inventory_disk_root "$server")"
+k3s_data_dir="$(k3s_data_dir_for_host "$server")"
+ssh_to "$server" "K3S_VERSION_REMOTE=$(printf '%q' "$K3S_VERSION") MAX_PODS_REMOTE=$(printf '%q' "$max_pods") DISK_ROOT_REMOTE=$(printf '%q' "$disk_root") K3S_DATA_DIR_REMOTE=$(printf '%q' "$k3s_data_dir") FORCE_REMOTE=$(printf '%q' "$force") bash -s" <<< "$remote_script"
 
 # Pull what we need from the server, one ssh per artifact (keeps parsing trivial).
 server_ip="$(ssh_to "$server" 'tailscale ip -4 | head -1')"
@@ -109,7 +117,7 @@ server_ip="$(ssh_to "$server" 'tailscale ip -4 | head -1')"
 mkdir -p "$HECATON_ROOT/config"
 umask 077
 
-ssh_to "$server" 'sudo cat /var/lib/rancher/k3s/server/node-token' \
+ssh_to "$server" "sudo cat $(printf '%q' "$k3s_data_dir/server/node-token")" \
   > "$HECATON_ROOT/config/k3s-node-token"
 [[ -s "$HECATON_ROOT/config/k3s-node-token" ]] || die "node-token empty"
 

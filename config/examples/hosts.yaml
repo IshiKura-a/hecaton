@@ -4,13 +4,18 @@
 #
 # Copy this file to config/hosts.yaml and edit. config/hosts.yaml is gitignored.
 #
-# `name` is the short, DNS-safe label used as both the Tailscale node name
-# and the k3s node name. Lowercase, no `@`.
+# `name` is hecaton's inventory name: the stable label you pass to ops scripts
+# such as `ops/maintenance-host.sh start <name>`. It is not an SSH target and
+# does not need to equal the machine's OS hostname.
 #
 # `ssh_host` is what gets passed straight to `ssh` as the target. The expected
 # pattern is to define a `Host <ssh_host>` block in your local ~/.ssh/config
 # with HostName, User, Port, IdentityFile, etc. hecaton itself does NOT store
 # any ssh credentials, users, or key paths.
+#
+# Kubernetes node names come from each remote machine's `hostname`, lowercased
+# by k3s/Tailscale bootstrap. Node-exporter may expose the OS nodename with its
+# original case. Hecaton keeps those separate from `name` and `ssh_host`.
 #
 # `role` is one of:
 #   server   - runs the k3s control plane (exactly one across the fleet).
@@ -27,6 +32,10 @@
 #
 # `max_pods` (optional) caps how many pods (sandboxes) can run on the node.
 # Omit to default to the host's CPU count (1 sandbox per core).
+#
+# `disk_root` (optional) is the filesystem mount used for sandbox/runtime data
+# and disk monitoring. Omit to default to /. For large image fleets, point this
+# at the host's data disk, e.g. /disk1.
 
 hosts:
   - name: control-plane-1
@@ -38,5 +47,6 @@ hosts:
     role: agent
     gpu_count: 4            # only expose 4 GPUs of this host to k8s
     max_pods: 32            # optional; defaults to CPU count
+    # disk_root: /disk1      # optional; defaults to /
 
   # Add the rest of your hosts below.
